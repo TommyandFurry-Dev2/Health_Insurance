@@ -1,0 +1,18 @@
+node_modules/
+
+# Live credentials. .env.example is the committed template.
+.env
+.env.local
+.env.uat
+.env.production
+
+# Captured Niva Bupa payment callback ciphertexts (see captureCiphertext in
+# src/controllers/payment.controller.js). Debugging evidence written on the
+# server — never commit it, and a stray copy must not block a git pull.
+returnmessage*.txt
+
+npm-debug.log*
+logs/
+*.log
+coverage/
+.DS_Store

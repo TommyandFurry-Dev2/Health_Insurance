@@ -1,0 +1,32 @@
+{
+  "name": "nivabupa-api",
+  "version": "1.0.0",
+  "description": "Niva Bupa (Reassure 3.0) partner API — standalone integration service",
+  "type": "module",
+  "main": "src/server.js",
+  "private": true,
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "migrate:status": "node scripts/migrate.js --status",
+    "migrate:verify": "node scripts/migrate.js --verify",
+    "verify": "node scripts/verify.js",
+    "verify:live": "node scripts/verify.js --live",
+    "smoke:premium": "node scripts/smoke-premium.js",
+    "smoke:journey": "node scripts/smoke-journey.js",
+    "smoke:payment": "node scripts/smoke-payment.js",
+    "replay:decresp": "node scripts/replay-decresp.mjs"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0",
+    "mysql2": "^3.23.2"
+  }
+}
