@@ -20,14 +20,17 @@
 //   controllers/ auth, quote, proposal, payment, case, journey
 //   routes/     one file per family + the composed router
 // ─────────────────────────────────────────────────────────────────────────────
-import config from './config/env.js';
+import config, { missingItgiVariables, itgiIsUnconfigured } from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
+import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helper.js';
 
 export {
   createNivabupaRouter,
+  createItgiRouter,
   createNivabupaProbeRouter,
   NIVABUPA_PATH_PREFIX,
+  ITGI_PATH_PREFIX,
 } from './routes/index.js';
 
 let sweeper = null;
@@ -81,6 +84,8 @@ export async function startNivabupa() {
   console.log(`  Payment returnPath → ${config.nivabupa.payment.returnUrl}`);
   console.log(`  Frontend redirect  → ${config.frontendUrl}${config.frontendReturnPath}`);
 
+  reportItgi(alias);
+
   const dbStatus = await db.verifyConnection();
   if (dbStatus.ok) {
     console.log(`  🗄️  MySQL: connected → ${dbStatus.db} (server ${dbStatus.version})`);
@@ -94,6 +99,72 @@ export async function startNivabupa() {
   console.log('───────────────────────────────────────────────────────');
 
   return dbStatus;
+}
+
+// The IFFCO Tokio half of the boot banner.
+//
+// Printed even when ITGI is not configured, and it says so: an operator who
+// expected the endpoints to be live needs to see that they are not, and an
+// operator who never set ITGI up needs to see that nothing is broken. Neither
+// state affects NivaBupa or stops this process starting.
+//
+// No value is printed. The endpoint host is — that is the single most useful
+// line here, because "staging.iffcotokio.co.in" against a production NODE_ENV
+// is the accident this whole report exists to surface (and config/validate.js
+// refuses to start on it).
+function reportItgi(alias) {
+  const missing = missingItgiVariables();
+
+  console.log('');
+  console.log('🩺 IFFCO Tokio Partner Health (FHP / IHP)');
+  console.log('');
+
+  if (itgiIsUnconfigured()) {
+    console.log('  Not configured — the /iffcotokio endpoints answer 503 naming what is missing.');
+    console.log('  Set ITGI_BASE_URL, ITGI_USERNAME, ITGI_PASSWORD and ITGI_PARTNER_CODE to enable.');
+    console.log('  Niva Bupa is unaffected.');
+    return;
+  }
+
+  console.log('  CONFIG   : GET  /iffcotokio/config/test');
+  console.log('  QUOTE    : POST /iffcotokio/premium');
+  console.log('  PROPOSAL : POST /iffcotokio/proposal');
+  console.log('  PAYMENT  : POST /iffcotokio/payment/initiate     (builds the gateway form)');
+  console.log('  CALLBACK : GET  /iffcotokio/payment/return       ⚠️ registered with ITGI');
+  console.log('  CONFIRM  : POST /iffcotokio/payment/confirmation (partner-end collection only)');
+  console.log('  DOCUMENT : POST /iffcotokio/policy-download');
+  console.log('  CKYC     : POST /iffcotokio/kyc/fetch');
+  console.log('  CKYC     : POST /iffcotokio/kyc/create');
+  console.log('');
+  if (alias) {
+    console.log(`  (every /iffcotokio route is also served under the ${alias} prefix)`);
+  }
+  console.log(`  Upstream base      → ${config.itgi.baseUrl}`);
+  console.log(`  Payment gateway    → ${itgiPaymentGatewayUrl()}`);
+  console.log(`  Frontend redirect  → ${config.frontendUrl}${config.itgi.frontendReturnPath}`);
+
+  // ITGI hold the response URL on their side, keyed to the partner code. If it
+  // does not end in the path this process actually serves, a successful payment
+  // lands on a 404 and the policy number — which reaches us nowhere else — is
+  // lost. Six live UAT payments were lost exactly this way on 2026-08-26, which
+  // is why this is checked at boot rather than discovered afterwards.
+  const expectedTail = `${alias || ''}/iffcotokio/payment/return`;
+  if (config.itgi.returnUrl) {
+    const matches = config.itgi.returnUrl.endsWith('/iffcotokio/payment/return');
+    console.log(`  ITGI redirects to  → ${config.itgi.returnUrl} ${matches ? '✅' : '❌ NOT a route this service serves'}`);
+    if (!matches) {
+      console.error('  ❌ ITGI_PAYMENT_RETURN_URL does not end in /iffcotokio/payment/return.');
+      console.error('     A successful payment will 404 and the policy number will be lost —');
+      console.error('     it reaches this service through that redirect and nowhere else.');
+    }
+  } else {
+    console.warn('  ⚠️  ITGI_PAYMENT_RETURN_URL is not set, so the URL ITGI redirect buyers to');
+    console.warn(`     cannot be checked against this service. It must end in ${expectedTail}`);
+  }
+
+  if (missing.length > 0) {
+    console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
 }
 
 // Ages idle journeys to ABANDONED and past-expiry ones to EXPIRED. Runs

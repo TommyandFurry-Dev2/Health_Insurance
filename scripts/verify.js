@@ -222,9 +222,30 @@ const EXPECTED_ROUTES = [
   'PATCH /nivabupa/journey/:journeyId/step',
   'PUT /nivabupa/journey/:journeyId/proposal',
   'PUT /nivabupa/journey/:journeyId/kyc',
+  // IFFCO Tokio. Registered whether or not ITGI is configured — an unconfigured
+  // deployment answers 503 on these paths rather than 404, which is the
+  // difference between "not set up" and "not deployed".
+  'GET /iffcotokio/config/test',
+  'POST /iffcotokio/premium',
+  'POST /iffcotokio/proposal',
+  'POST /iffcotokio/payment/initiate',
+  // ⚠️ The URL registered with ITGI, and the only channel by which a policy
+  // number reaches this service. GET is what their gateway actually redirects
+  // with; POST is registered too so a change of method does not lose a policy.
+  'GET /iffcotokio/payment/return',
+  'POST /iffcotokio/payment/return',
+  'POST /iffcotokio/payment/confirmation',
+  'POST /iffcotokio/policy-download',
+  'POST /iffcotokio/kyc/fetch',
+  'POST /iffcotokio/kyc/create',
   'GET /healthz',
   'GET /readyz',
 ];
+
+// Both insurer prefixes are served a second time under the compatibility alias.
+// For ITGI that is not merely a compatibility nicety: the payment response URL
+// registered with them goes through it (…/health/iffcotokio/payment/return).
+const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/'];
 
 check(`all ${EXPECTED_ROUTES.length} routes registered at the primary mount`, () => {
   const missing = EXPECTED_ROUTES.filter((route) => !registered.has(route));
@@ -235,8 +256,11 @@ check(`all ${EXPECTED_ROUTES.length} routes registered at the primary mount`, ()
 check('compatibility alias mount serves the same routes', () => {
   if (!config.aliasPrefix) return 'disabled (NIVABUPA_ALIAS_PREFIX empty)';
   const aliased = EXPECTED_ROUTES
-    .filter((route) => route.includes('/nivabupa/'))
-    .map((route) => route.replace(' /nivabupa/', ` ${config.aliasPrefix}/nivabupa/`));
+    .filter((route) => ALIASED_PREFIXES.some((prefix) => route.includes(prefix)))
+    .map((route) => {
+      const prefix = ALIASED_PREFIXES.find((candidate) => route.includes(candidate));
+      return route.replace(` ${prefix}`, ` ${config.aliasPrefix}${prefix}`);
+    });
   const missing = aliased.filter((route) => !registered.has(route));
   assert(missing.length === 0, `missing under ${config.aliasPrefix}:\n         ${missing.join('\n         ')}`);
   return `${aliased.length} routes under ${config.aliasPrefix}`;

@@ -19,7 +19,7 @@
 // only), which is enough to tell "the wrong key is set" from "no key is set"
 // without putting a live partner credential in a log pm2 keeps on disk.
 
-import config, { fallbackVariableNames } from './env.js';
+import config, { fallbackVariableNames, missingItgiVariables, itgiIsUnconfigured } from './env.js';
 
 // Without these, the named flow cannot work at all — there is no fallback and
 // no way to synthesise one.
@@ -130,7 +130,38 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   console.log('    MySQL              :', `${config.db.user}@${config.db.host}:${config.db.port}/${config.db.database}`);
   console.log('');
 
+  // ── IFFCO Tokio ──
+  //
+  // Reported separately because it is configured differently: it has NO bundled
+  // fallbacks at all (see defaults.js), so there is no FALLBACK level here —
+  // a value is either set or missing, and missing means those endpoints answer
+  // 503 while everything else keeps working.
+  const itgiMissing = missingItgiVariables();
+  console.log('  IFFCO Tokio (optional — Niva Bupa is unaffected either way)');
+  if (itgiIsUnconfigured()) {
+    console.log('    not configured — /iffcotokio endpoints answer 503');
+  } else {
+    console.log('    base URL           :', describeUrl(config.itgi.baseUrl));
+    console.log('    ITGI_USERNAME      :', describeSecret(config.itgi.username));
+    console.log('    ITGI_PASSWORD      :', describeSecret(config.itgi.password));
+    console.log('    ITGI_PARTNER_CODE  :', describeSecret(config.itgi.partnerCode));
+    console.log('    payment redirect   :', config.itgi.returnUrl || '(ITGI_PAYMENT_RETURN_URL not set)');
+    console.log('    frontend redirect  :', `${config.frontendUrl}${config.itgi.frontendReturnPath}`);
+  }
+  console.log('');
+
   const fatal = [];
+
+  if (itgiMissing.length > 0 && !itgiIsUnconfigured()) {
+    console.warn('  ⚠️  IFFCO Tokio is PARTIALLY configured — missing:');
+    console.warn(`       ${itgiMissing.join(', ')}`);
+    console.warn('       The /iffcotokio endpoints will answer 503 until these are set.');
+    console.warn('');
+    // Not fatal in production: a half-configured ITGI must not stop a working
+    // Niva Bupa deployment from booting. STRICT_ENV=1 makes it fatal for a
+    // deployment that wants both or neither.
+    if (strict) fatal.push(...itgiMissing);
+  }
 
   if (missing.length > 0) {
     console.warn('  ⚠️  Missing required variables:');
@@ -161,6 +192,15 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
     ['NIVABUPA_DATAPUSH_URL', config.nivabupa.dataPushUrl],
     ['NIVABUPA_SOAP_URL', config.nivabupa.payment.soapUrl],
   ].filter(([, value]) => looksLikeUat(value)).map(([name]) => name);
+
+  // Same check for IFFCO Tokio, and it applies only when ITGI is configured at
+  // all — an unconfigured deployment has no URL to be wrong about.
+  if (isProduction && !itgiIsUnconfigured() && looksLikeUat(config.itgi.baseUrl)) {
+    console.error('  ❌ NODE_ENV=production but ITGI_BASE_URL still points at UAT/staging:');
+    console.error(`       ${describeUrl(config.itgi.baseUrl)}`);
+    console.error('');
+    fatal.push('ITGI_BASE_URL');
+  }
 
   if (isProduction && uatEndpoints.length > 0) {
     console.error('  ❌ NODE_ENV=production but these endpoints still point at UAT:');

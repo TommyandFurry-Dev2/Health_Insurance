@@ -19,6 +19,7 @@ import dotenv from 'dotenv';
 
 import {
   NIVABUPA_UAT_DEFAULTS as NB,
+  ITGI_DEFAULTS as IT,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -78,6 +79,27 @@ const dbPassword = () => {
   usedFallbacks.add('DB_PASSWORD');
   return '';
 };
+
+// Read with NO fallback and NO fallback record: used for values that have no
+// bundled default anywhere in this codebase (the two Case API credentials, and
+// every environment-dependent IFFCO Tokio value). An empty string is unset —
+// a blank line in .env is not a credential.
+//
+// The difference from envOr() matters: envOr records the name so the boot report
+// can say "this came from defaults.js". These have no default to come from, so
+// what the report needs to say is "this is missing", which it derives from the
+// value being undefined rather than from the fallback set.
+function requiredEnv(name) {
+  const value = process.env[name];
+  return value === undefined || value === '' ? undefined : value;
+}
+
+// Trailing slash removed once, here, so no caller has to remember: every ITGI
+// URL is built as `${baseUrl}${path}` and `.../ ` + `/partner-services/...`
+// would produce a double slash that ITGI's gateway answers 404 to.
+function trimTrailingSlash(value) {
+  return typeof value === 'string' ? value.replace(/\/+$/, '') : value;
+}
 
 // Strict equality, deliberately not `(process.env.NODE_ENV || 'development')`
 // like config.env below. The two failure modes are not symmetric: a deployment
@@ -234,13 +256,111 @@ const config = {
     },
   },
 
+  // ── IFFCO Tokio (ITGI) — Partner Health ────────────────────────────────────
+  //
+  // Every environment-dependent value below is read from the environment ONLY.
+  // There is no bundled host, credential or partner code (see the ITGI note in
+  // defaults.js for why this differs from `nivabupa` above), so:
+  //
+  //   * UAT      → set ITGI_BASE_URL to the staging host + the UAT credentials
+  //   * PROD     → change those same four variables, nothing else
+  //   * unset    → the /iffcotokio endpoints answer 503 naming what is missing,
+  //                and nothing else in this service is affected
+  //
+  // Nothing here is reachable from the NivaBupa flow and nothing in the
+  // NivaBupa flow reads it.
+  itgi: {
+    // Dumps the full upstream request/response of every ITGI call to stdout.
+    // Off unless set: proposal and CKYC bodies carry PAN, Aadhaar, DOB, medical
+    // answers and base64 document scans. Failures are logged regardless.
+    debug: process.env.ITGI_DEBUG === '1',
+
+    // The four that decide which ITGI environment this process talks to.
+    baseUrl: trimTrailingSlash(requiredEnv('ITGI_BASE_URL')),
+    username: requiredEnv('ITGI_USERNAME'),
+    password: requiredEnv('ITGI_PASSWORD'),
+    // Sent as partnerDetail.partnerCode on every request, and the key ITGI hold
+    // our registered payment response URL against.
+    partnerCode: requiredEnv('ITGI_PARTNER_CODE'),
+
+    // Request paths appended to baseUrl. The API contract, identical in UAT and
+    // production — overridable only so an ITGI-side path change stays a .env
+    // edit. See defaults.js.
+    paths: {
+      premium: envOr('ITGI_PREMIUM_PATH', IT.paths.premium),
+      proposal: envOr('ITGI_PROPOSAL_PATH', IT.paths.proposal),
+      paymentInitiate: envOr('ITGI_PAYMENT_INITIATE_PATH', IT.paths.paymentInitiate),
+      paymentConfirmation: envOr('ITGI_PAYMENT_CONFIRMATION_PATH', IT.paths.paymentConfirmation),
+      policyDownload: envOr('ITGI_POLICY_DOWNLOAD_PATH', IT.paths.policyDownload),
+      kycFetch: envOr('ITGI_KYC_FETCH_PATH', IT.paths.kycFetch),
+      kycCreate: envOr('ITGI_KYC_CREATE_PATH', IT.paths.kycCreate),
+    },
+
+    defaultContractType: envOr('ITGI_CONTRACT_TYPE', IT.contractType),
+    maxRetries: numberEnvOr('ITGI_MAX_RETRIES', IT.maxRetries),
+    jsonBodyLimit: envOr('ITGI_JSON_BODY_LIMIT', IT.jsonBodyLimit),
+
+    // Where the buyer's browser is sent to pay. ITGI return this URL on the
+    // proposal response as `itgiPaymentUrl` and THAT value is what the buyer is
+    // handed; this is only the fallback used when a caller asks this service to
+    // rebuild a payment form from an orderNo it no longer has the response for.
+    // Left null so it derives from baseUrl + paths.paymentInitiate — set
+    // ITGI_PAYMENT_GATEWAY_URL only if ITGI host the gateway somewhere else.
+    paymentGatewayUrl: trimTrailingSlash(requiredEnv('ITGI_PAYMENT_GATEWAY_URL')) || null,
+
+    // OURS, not ITGI's: the URL ITGI redirect the buyer back to after payment,
+    // registered on THEIR side against our partner code. This service never
+    // sends it anywhere — it is here so the boot report can show which URL this
+    // deployment believes is registered, because a mismatch between it and the
+    // route this process actually serves is invisible until a real payment
+    // lands on a 404 and the policy number is lost.
+    returnUrl: requiredEnv('ITGI_PAYMENT_RETURN_URL') || null,
+
+    // SPA route the payment return handler 302s the buyer to, appended to
+    // FRONTEND_URL with the outcome as a query string.
+    frontendReturnPath: envOr('ITGI_FRONTEND_RETURN_PATH', IT.frontendReturnPath),
+
+    // Falls back to the NivaBupa/global list so one origin allow-list covers
+    // the whole service; set ITGI_CORS_ORIGINS only to diverge from it.
+    corsOrigins: process.env.ITGI_CORS_ORIGINS
+      || process.env.NIVABUPA_CORS_ORIGINS
+      || process.env.CORS_ORIGINS
+      || APP_DEFAULTS.corsOrigins,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),
     soap: numberEnvOr('NIVABUPA_SOAP_TIMEOUT_MS', TIMEOUT_DEFAULTS.soap),
     dataPush: numberEnvOr('NIVABUPA_DATAPUSH_TIMEOUT_MS', TIMEOUT_DEFAULTS.dataPush),
+    itgi: numberEnvOr('ITGI_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.itgi),
+    itgiCkycCreate: numberEnvOr('ITGI_CKYC_CREATE_TIMEOUT_MS', TIMEOUT_DEFAULTS.itgiCkycCreate),
   },
 };
+
+// The four variables without which no ITGI call can be made, by name.
+//
+// One definition, two readers: config/validate.js reports them at boot, and
+// services/itgiApi.service.js refuses the call at request time. Keeping it here
+// rather than in either of them is what stops the two from disagreeing about
+// what "configured" means.
+//
+// Returns [] when ITGI is fully configured. Names only — never values.
+export function missingItgiVariables() {
+  const missing = [];
+  if (!config.itgi.baseUrl) missing.push('ITGI_BASE_URL');
+  if (!config.itgi.username) missing.push('ITGI_USERNAME');
+  if (!config.itgi.password) missing.push('ITGI_PASSWORD');
+  if (!config.itgi.partnerCode) missing.push('ITGI_PARTNER_CODE');
+  return missing;
+}
+
+// True when NONE of the four are set — an entirely NivaBupa deployment that has
+// simply not been given ITGI credentials. Distinguished from a PARTIAL
+// configuration, which is a mistake worth warning about at boot.
+export function itgiIsUnconfigured() {
+  return missingItgiVariables().length === 4;
+}
 
 // Names only — never values. Consumed by config/validate.js.
 export function fallbackVariableNames() {

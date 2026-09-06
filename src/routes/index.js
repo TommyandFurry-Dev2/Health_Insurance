@@ -9,6 +9,7 @@ import proposal_routes from './proposal.routes.js';
 import payment_routes from './payment.routes.js';
 import case_routes from './case.routes.js';
 import journey_routes from './journey.routes.js';
+import itgi_routes from './itgi.routes.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
@@ -24,15 +25,33 @@ import { errorHandler, notFound } from '../middleware/errorHandler.js';
 // default URL.
 export const NIVABUPA_PATH_PREFIX = '/nivabupa';
 
+// Every IFFCO Tokio route lives under this one prefix, and so does every piece
+// of its middleware — the same scoping property NIVABUPA_PATH_PREFIX has, and
+// for the same reason: it lets createItgiRouter() be mounted twice (at '/' and
+// at the compatibility alias) without its middleware running twice.
+//
+// A literal, and not env-driven, for one more reason than the NivaBupa prefix
+// has: it is the tail of the payment response URL REGISTERED WITH ITGI against
+// our partner code —
+//   https://<host>/health/iffcotokio/payment/return
+// — so it is fixed on their side. An env var here could not change what they
+// redirect to; it could only move this service's route away from it, which is
+// precisely the failure that loses a policy number.
+export const ITGI_PATH_PREFIX = '/iffcotokio';
+
 // verify: captures the exact raw bytes on req.rawBody before the body is
 // decoded — kept from the original backend for diagnosing the NivaBupa
 // payment/return callback (does not change parsing behavior for any route).
 const captureRawBody = (req, res, buf) => { req.rawBody = buf; };
 
-function corsOptions() {
-  return config.corsOrigins === '*'
+// `origins` defaults to the NivaBupa/global list, which is what every existing
+// caller passes (none) — the parameter exists so the ITGI router can be given
+// ITGI_CORS_ORIGINS when a deployment needs the two to differ. Behaviour with
+// no argument is unchanged.
+function corsOptions(origins = config.corsOrigins) {
+  return origins === '*'
     ? {}
-    : { origin: config.corsOrigins.split(',').map((o) => o.trim()).filter(Boolean) };
+    : { origin: origins.split(',').map((o) => o.trim()).filter(Boolean) };
 }
 
 // The NivaBupa router, self-contained: its own CORS policy, its own body
@@ -86,6 +105,55 @@ export function createNivabupaRouter() {
   // app.js's own handlers instead of being answered here.
   router.use(NIVABUPA_PATH_PREFIX, notFound);
   router.use(NIVABUPA_PATH_PREFIX, errorHandler);
+
+  return router;
+}
+
+// The IFFCO Tokio router — a sibling of the NivaBupa one above, built the same
+// way and scoped just as tightly to its own prefix. Kept as a separate router
+// rather than another `router.use()` inside createNivabupaRouter() because the
+// two integrations must be able to fail independently: nothing here can affect
+// a NivaBupa request, and an ITGI deployment that was never configured simply
+// answers 503 on its own paths.
+//
+// Three differences from the NivaBupa stack, each deliberate:
+//   * body limit — CKYC create carries base64 document uploads (PAN, address
+//     proof, photograph), which do not fit the 100kb express.json default.
+//     ITGI_JSON_BODY_LIMIT, 6mb by default.
+//   * no rate limiting — same reason: ITGI redirect the buyer to
+//     /iffcotokio/payment/return, and a 429 there means the buyer paid and the
+//     policy number was thrown away.
+//   * its own CORS list — ITGI_CORS_ORIGINS, falling back to the shared one.
+export function createItgiRouter() {
+  const router = express.Router();
+
+  router.use(
+    ITGI_PATH_PREFIX,
+    cors(corsOptions(config.itgi.corsOrigins)),
+    express.json({ limit: config.itgi.jsonBodyLimit }),
+    // The payment return may arrive as a form POST rather than the observed
+    // GET, so the urlencoded parser has to be here too.
+    express.urlencoded({ extended: true, limit: config.itgi.jsonBodyLimit }),
+    logRequest,
+  );
+
+  // The same optional journey resolution the NivaBupa pass-throughs use, reused
+  // rather than reimplemented. It does two things that matter equally here: it
+  // hangs an optional journey on the request so ITGI calls can be audited
+  // against it, and it DELETES journeyId / resumeToken from the body so neither
+  // can be forwarded into an ITGI payload — ITGI reject unknown fields with the
+  // same generic error they use for everything else.
+  //
+  // Its journey-API bypass keys on '/nivabupa/journey', which no ITGI path
+  // matches, so every ITGI request takes the normal branch.
+  router.use(ITGI_PATH_PREFIX, resolveJourney);
+
+  router.use(itgi_routes);
+
+  // Path-scoped, so a request that is not for this router falls through to
+  // app.js's own handlers instead of being answered here.
+  router.use(ITGI_PATH_PREFIX, notFound);
+  router.use(ITGI_PATH_PREFIX, errorHandler);
 
   return router;
 }

@@ -52,12 +52,13 @@ does not restart a process that is serving correctly.
 nivabupa-api/
 ├── src/
 │   ├── server.js                  HTTP entrypoint: validate → listen → boot → graceful shutdown
-│   ├── app.js                     Express app: helmet, the router, the /health alias, probes
-│   ├── index.js                   Module boundary: router factory + start/stop lifecycle
+│   ├── app.js                     Express app: helmet, both insurer routers, the /health alias, probes
+│   ├── index.js                   Module boundary: router factories + start/stop lifecycle
 │   │
 │   ├── config/
 │   │   ├── env.js                 THE config object. Nothing else reads process.env.
-│   │   ├── defaults.js            The only file containing a literal URL, credential or key.
+│   │   ├── defaults.js            The only file containing a literal Niva Bupa URL, credential
+│   │   │                          or key — and, for IFFCO Tokio, deliberately none of those.
 │   │   └── validate.js            Startup report; refuses unsafe production config.
 │   │
 │   ├── routes/
@@ -67,9 +68,10 @@ nivabupa-api/
 │   │   ├── proposal.routes.js     /nivabupa/uw-decision, /nivabupa/datapush
 │   │   ├── payment.routes.js      /nivabupa/payment/initiate, /nivabupa/payment/return
 │   │   ├── case.routes.js         /nivabupa/proposal-status, /nivabupa/policy-download
-│   │   └── journey.routes.js      /nivabupa/journey/*
+│   │   ├── journey.routes.js      /nivabupa/journey/*
+│   │   └── itgi.routes.js         /iffcotokio/*  (IFFCO Tokio — see docs/iffco-tokio.md)
 │   │
-│   ├── controllers/               auth · quote · proposal · payment · case · journey
+│   ├── controllers/               auth · quote · proposal · payment · case · journey · itgi
 │   │
 │   ├── services/
 │   │   ├── nivabupaAuth.service.js   OAuth client_credentials → Bearer token
@@ -77,18 +79,23 @@ nivabupa-api/
 │   │   ├── genericApi.service.js     Premium / UW / Data Push transport, retry, tracing
 │   │   ├── caseApi.service.js        Proposal Status / Policy Download transport
 │   │   ├── soap.service.js           encResp / decResp payment crypto (WCF SOAP)
-│   │   └── journey.service.js        Journey persistence orchestration
+│   │   ├── journey.service.js        Journey persistence orchestration
+│   │   ├── itgiApi.service.js        IFFCO Tokio transport (HTTP Basic) + operations
+│   │   └── itgiCkyc.service.js       IFFCO Tokio CKYC fetch / create
 │   │
 │   ├── repositories/              Raw SQL, one file per journey table
 │   ├── middleware/                journeyContext · requestLogger · errorHandler
 │   ├── helpers/                   payment querystring · proposal defaults · XML primitives
+│   │                              · ITGI request prep, parsing and validation
 │   ├── constants/                 journey step machine · payment fields · proposal constants
+│   │                              · ITGI masters, medical questions, CKYC vocabulary
 │   ├── utils/                     token cache · JWT exp decode · redaction/coercion
 │   └── db/                        mysql2 pool + transaction runner
 │
 ├── migrations/                    001_create_journey_schema.sql, 002_add_mobile_to_users.sql
 ├── scripts/                       migrate · verify · smoke-* · replay-decresp
 ├── docs/journey-resume.md         Journey break/resume design notes
+├── docs/iffco-tokio.md            IFFCO Tokio integration guide
 ├── .env / .env.example
 ├── .gitignore
 └── package.json
@@ -153,6 +160,17 @@ Base URL: `http://<host>:<port>`
 Every `/nivabupa/*` route is **also** served under `/health/nivabupa/*`
 (compatibility alias for frontend builds whose base URL still ends in `/health`;
 disable with `NIVABUPA_ALIAS_PREFIX=`).
+
+The service also carries a second insurer, **IFFCO Tokio**, under `/iffcotokio/*`
+(and the same `/health` alias). It is entirely separate — its own router, its own
+config, its own credentials — and is optional: leave `ITGI_BASE_URL` and friends
+unset and those endpoints answer `503` while everything below is unaffected. See
+**[docs/iffco-tokio.md](docs/iffco-tokio.md)**.
+
+⚠️ The `/health` alias is not optional for IFFCO Tokio: the payment response URL
+registered with them goes through it
+(`…/health/iffcotokio/payment/return`), and that redirect is the only channel by
+which an ITGI policy number reaches this service.
 
 ### Journey identity (optional, on every pass-through route)
 
@@ -509,6 +527,31 @@ named error and everything else keeps working.
 | `NIVABUPA_PAYMENT_COLLECT_MODE` | `OL` | | `POLICY.PAYMENT_INFO.PAYMENT_COLLECT_MODE` |
 | `NIVABUPA_PAYMENT_RECEIVED_FLAG` | `Y` | | `POLICY.PAYMENT_INFO.PAYMENT_RECEIVED_FLAG` (Data Push only) |
 
+### IFFCO Tokio (optional — leave unset and the `/iffcotokio` routes answer 503)
+
+**No bundled fallbacks.** Unlike every Niva Bupa variable above, none of these
+has a default in `defaults.js` — there is no ITGI host, credential or partner
+code anywhere in the source. Full detail in
+**[docs/iffco-tokio.md](docs/iffco-tokio.md)**.
+
+| Variable | Default | Prod? | Notes |
+| --- | --- | :-: | --- |
+| `ITGI_BASE_URL` | *(none)* | ⚠️ | The ITGI host. Every path is appended to it, so this one value moves the integration between environments. `NODE_ENV=production` refuses to start on a UAT/staging value. |
+| `ITGI_USERNAME` | *(none)* | ⚠️ | HTTP Basic. |
+| `ITGI_PASSWORD` | *(none)* | ⚠️ | HTTP Basic. |
+| `ITGI_PARTNER_CODE` | *(none)* | ⚠️ | Sent as `partnerDetail.partnerCode`; the key ITGI hold the return URL against. |
+| `ITGI_PAYMENT_RETURN_URL` | *(none)* | ⚠️ | **Ours.** The URL ITGI redirect buyers to, registered on *their* side. Must end in `/iffcotokio/payment/return`; checked at boot. |
+| `ITGI_FRONTEND_RETURN_PATH` | `/iffcotokio-return` | | SPA route the callback 302s to, appended to `FRONTEND_URL`. |
+| `ITGI_CONTRACT_TYPE` | `FHP` | | `FHP` (floater) or `IHP` (per member), when a request sends none. |
+| `ITGI_API_TIMEOUT_MS` | `60000` | | Per attempt. |
+| `ITGI_CKYC_CREATE_TIMEOUT_MS` | `120000` | | CKYC create was measured at 44s against ~1s for the health calls. |
+| `ITGI_MAX_RETRIES` | `2` | | Transport failures and 502/503/504 only. Proposal, payment confirmation and CKYC create are never retried. |
+| `ITGI_JSON_BODY_LIMIT` | `6mb` | | CKYC create carries base64 document uploads. |
+| `ITGI_DEBUG` | `0` | | Dumps full bodies. They carry PAN, Aadhaar, DOB and document scans. |
+| `ITGI_CORS_ORIGINS` | *(NivaBupa's)* | | Only to diverge from the shared list. |
+| `ITGI_PAYMENT_GATEWAY_URL` | *(from base URL)* | | Only if ITGI host the gateway off the API base. |
+| `ITGI_*_PATH` (×7) | *(contract paths)* | | The API contract, identical in UAT and production. Overridable so an ITGI-side path change stays a `.env` edit. |
+
 ### Timeouts, database, journey
 
 | Variable | Default | Notes |
@@ -565,11 +608,33 @@ at a UAT host, or if a production-critical variable fell back to the bundled UAT
 default. That check exists because the failure it prevents is silent: real buyers
 transacting against a UAT tenant.
 
-Two things are **not** purely `.env`:
+For IFFCO Tokio it is four variables plus the registered return URL:
+
+```env
+ITGI_BASE_URL=<prod host>
+ITGI_USERNAME=<prod>
+ITGI_PASSWORD=<prod>
+ITGI_PARTNER_CODE=<prod>
+ITGI_PAYMENT_RETURN_URL=https://<your-domain>/health/iffcotokio/payment/return
+```
+
+`NODE_ENV=production` refuses to start on an `ITGI_BASE_URL` that still looks
+like UAT/staging, exactly as it does for the Niva Bupa endpoints. Unlike them,
+ITGI has **no bundled fallbacks at all** — no host, credential or partner code
+exists in `defaults.js` — so a production deployment cannot silently transact
+against ITGI staging; it simply cannot reach ITGI until it is told how.
+
+Three things are **not** purely `.env`:
 
 * **`NIVABUPA_PAYMENT_RETURN_URL` must be registered with Niva Bupa.** Their
   gateway may validate `returnPath` against what they hold, so pointing it at a
   new host requires telling them. Setting the variable alone is not enough.
+* **`ITGI_PAYMENT_RETURN_URL` must be registered with IFFCO Tokio**, against the
+  partner code. Setting the variable tells this service what to expect; ITGI
+  must be asked to change what they actually redirect to. Startup reports a
+  mismatch between it and the route served, because a wrong value means a paid
+  buyer lands on a 404 and the policy number — which reaches us nowhere else —
+  is lost.
 * **The database schema** must exist in the production MySQL — run
   `npm run migrate` once against it.
 

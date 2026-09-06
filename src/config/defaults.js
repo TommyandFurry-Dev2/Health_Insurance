@@ -61,6 +61,66 @@ export const NIVABUPA_UAT_DEFAULTS = {
   paymentDecryptionKey: '!max#bupa@',
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// IFFCO Tokio (ITGI) — Partner Health.
+//
+// Deliberately NOT symmetrical with NIVABUPA_UAT_DEFAULTS above: there is no
+// host, no credential, no partner code here, and there must never be one.
+//
+// The NivaBupa table holds UAT values because that behaviour was inherited from
+// a working deployment and removing it would change it (see its own note). ITGI
+// arrives new, so it starts with the property that table cannot have: nothing
+// in this codebase knows an ITGI hostname. A process without ITGI_BASE_URL,
+// ITGI_USERNAME, ITGI_PASSWORD and ITGI_PARTNER_CODE cannot reach ITGI at all —
+// the endpoints answer 503 naming the missing variables instead of quietly
+// transacting against staging, which is what a bundled default would do the
+// first time somebody deployed without setting them.
+//
+// What IS here is the API contract: the request paths appended to the base URL.
+// Those are identical in UAT and production — they are what the endpoints are
+// CALLED, not where they live — so they are not environment configuration. They
+// stay overridable all the same (ITGI_*_PATH), so a path change on ITGI's side
+// is still a .env edit rather than a release.
+// ─────────────────────────────────────────────────────────────────────────────
+export const ITGI_DEFAULTS = {
+  // Appended to ITGI_BASE_URL. Verified against ITGI_PARTNER_HEALTH_KIT v3.5
+  // (health) and Partner CKYC Kit v1.4.1 (kyc).
+  paths: {
+    premium: '/partner-services/health/premium',
+    proposal: '/partner-services/health/proposal',
+    // The hosted gateway page the buyer's browser is POSTed to. Not called
+    // server-to-server — ITGI return the same URL on the proposal response as
+    // `itgiPaymentUrl`, and that value is preferred over this one.
+    paymentInitiate: '/partner-services/transaction/initiate',
+    paymentConfirmation: '/partner-services/payment/confirmation',
+    policyDownload: '/partner-services/policy/download',
+    // CKYC. Only source of `itgiKYCReferenceNo`, which every proposal needs.
+    kycFetch: '/partner-services/kyc/fetch',
+    kycCreate: '/partner-services/kyc/create',
+  },
+
+  // FHP (family floater, one policy-level sum insured) or IHP (individual, one
+  // sum insured per member). Applied when a caller sends no contractType.
+  contractType: 'FHP',
+
+  // Every ITGI route lives under this prefix. Not env-driven, for the same
+  // reason APP_DEFAULTS.pathPrefix is not: it is baked into the route table
+  // (routes/itgi.routes.js) AND it is the tail of the response URL registered
+  // with ITGI against our partner code — an env var here could change neither.
+  pathPrefix: '/iffcotokio',
+
+  // SPA route the payment return redirects to, appended to FRONTEND_URL.
+  frontendReturnPath: '/iffcotokio-return',
+
+  // CKYC create carries base64 document uploads (PAN/address proof/photograph),
+  // which do not fit the 100kb express.json default the NivaBupa router uses.
+  jsonBodyLimit: '6mb',
+
+  // Retries on transport failures and 502/503/504 only — never on a 200 that
+  // carried a validation error[], which would just repeat the rejection.
+  maxRetries: 2,
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.
@@ -110,6 +170,17 @@ export const TIMEOUT_DEFAULTS = {
   // this server is what gives up first and can report why, rather than the
   // browser cutting a live request and leaving no server-side record.
   dataPush: 55000,
+
+  // ── IFFCO Tokio ──
+  // Premium and proposal answer in ~1s on staging, but the same host has been
+  // seen taking far longer under load, and a proposal that times out has an
+  // unknown outcome (an orderNo may exist). 60s rather than 20s.
+  itgi: 60000,
+  // CKYC create is the outlier: measured at 44 SECONDS on ITGI staging
+  // (2026-08-25, the run that returned IURN UVXPSRBNIFZ2JK) against ~1s for
+  // every health call. It writes to CERSAI through ITGI, and a timeout costs
+  // the customer their document uploads, so it gets triple the health budget.
+  itgiCkycCreate: 120000,
 };
 
 // Ours, not NivaBupa's — see config/env.js for why each default is what it is.

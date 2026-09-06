@@ -1,18 +1,21 @@
-// The Express application. Deliberately thin: everything NivaBupa-specific
-// lives inside the router returned by createNivabupaRouter(), which carries its
-// own CORS policy, body parsers, access log and error envelopes.
+// The Express application. Deliberately thin: everything insurer-specific lives
+// inside a router of its own — createNivabupaRouter() and createItgiRouter() —
+// each carrying its own CORS policy, body parsers, access log and error
+// envelopes, and each scoped to its own path prefix.
 //
-// The middleware order below reproduces exactly what these endpoints ran under
-// when this integration was mounted inside tf-api — helmet first, then the
-// NivaBupa router, then the alias mount, then the probes. Nothing else was in
-// front of them there (tf-api's CORS, rate limiter and body parsers were all
+// The middleware order below reproduces exactly what the NivaBupa endpoints ran
+// under when this integration was mounted inside tf-api — helmet first, then
+// the NivaBupa router, then the alias mount, then the probes. Nothing else was
+// in front of them there (tf-api's CORS, rate limiter and body parsers were all
 // registered after the NivaBupa mount and never ran for these paths), and
-// nothing else is in front of them here.
+// nothing else is in front of them here. The IFFCO Tokio router is mounted
+// after them, on a prefix none of them match, so nothing about that order
+// changed when it was added.
 import express from 'express';
 import helmet from 'helmet';
 
 import config from './config/env.js';
-import { createNivabupaRouter, createNivabupaProbeRouter } from './index.js';
+import { createNivabupaRouter, createItgiRouter, createNivabupaProbeRouter } from './index.js';
 
 export function createApp() {
   const app = express();
@@ -42,6 +45,22 @@ export function createApp() {
   // nothing there, and falls through to this one.
   if (config.aliasPrefix) {
     app.use(config.aliasPrefix, nivabupaRouter);
+  }
+
+  // IFFCO Tokio, mounted the same way and under the same alias.
+  //
+  // The alias is not optional decoration for this one: the payment response URL
+  // REGISTERED WITH ITGI against our partner code is
+  //   https://<host>/health/iffcotokio/payment/return
+  // — it goes through the /health alias, so disabling NIVABUPA_ALIAS_PREFIX
+  // would take the ITGI payment callback offline with it and lose the policy
+  // number of every buyer who pays. Both mounts of the same router instance are
+  // safe for the same reason the NivaBupa ones are: every route and every piece
+  // of middleware inside it is scoped to /iffcotokio.
+  const itgiRouter = createItgiRouter();
+  app.use(itgiRouter);
+  if (config.aliasPrefix) {
+    app.use(config.aliasPrefix, itgiRouter);
   }
 
   // GET /healthz, GET /readyz — outside the /nivabupa prefix so a load balancer
