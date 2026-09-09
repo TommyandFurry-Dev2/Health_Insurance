@@ -19,6 +19,7 @@
     "smoke:premium": "node scripts/smoke-premium.js",
     "smoke:journey": "node scripts/smoke-journey.js",
     "smoke:payment": "node scripts/smoke-payment.js",
+    "smoke:fg": "node scripts/smoke-fg.js",
     "replay:decresp": "node scripts/replay-decresp.mjs"
   },
   "dependencies": {
@@ -26,7 +27,9 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "fast-xml-parser": "^4.5.7",
     "helmet": "^8.2.0",
-    "mysql2": "^3.23.2"
+    "mysql2": "^3.23.2",
+    "xmlbuilder2": "^3.1.1"
   }
 }

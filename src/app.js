@@ -15,7 +15,9 @@ import express from 'express';
 import helmet from 'helmet';
 
 import config from './config/env.js';
-import { createNivabupaRouter, createItgiRouter, createNivabupaProbeRouter } from './index.js';
+import {
+  createNivabupaRouter, createItgiRouter, createFgRouter, createNivabupaProbeRouter,
+} from './index.js';
 
 export function createApp() {
   const app = express();
@@ -61,6 +63,27 @@ export function createApp() {
   app.use(itgiRouter);
   if (config.aliasPrefix) {
     app.use(config.aliasPrefix, itgiRouter);
+  }
+
+  // Future Generali, mounted the same way and under the same alias.
+  //
+  // The alias matters here too, though for a different reason than ITGI's. FG
+  // do not hold a registered return URL — this service SENDS the ResponseURL on
+  // every payment form — so FG_PAYMENT_RETURN_URL is what decides where the
+  // callback lands, and it must name a path this process actually serves. The
+  // deployed frontend reaches this backend through /health (the Apache in front
+  // of the host proxies only that prefix), so the alias is what makes
+  //   https://<host>/health/future-generali/payment/return
+  // reachable at all. config/validate.js checks that variable against the route
+  // served and complains when they disagree.
+  //
+  // Both mounts of the same router instance are safe for the same reason the
+  // others are: every route and every piece of middleware inside it is scoped
+  // to /future-generali.
+  const fgRouter = createFgRouter();
+  app.use(fgRouter);
+  if (config.aliasPrefix) {
+    app.use(config.aliasPrefix, fgRouter);
   }
 
   // GET /healthz, GET /readyz — outside the /nivabupa prefix so a load balancer

@@ -20,7 +20,10 @@
 //   controllers/ auth, quote, proposal, payment, case, journey
 //   routes/     one file per family + the composed router
 // ─────────────────────────────────────────────────────────────────────────────
-import config, { missingItgiVariables, itgiIsUnconfigured } from './config/env.js';
+import config, {
+  missingItgiVariables, itgiIsUnconfigured,
+  missingFgVariables, missingFgPaymentVariables, fgIsUnconfigured, fgCkycFlavour,
+} from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
 import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helper.js';
@@ -28,9 +31,11 @@ import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helpe
 export {
   createNivabupaRouter,
   createItgiRouter,
+  createFgRouter,
   createNivabupaProbeRouter,
   NIVABUPA_PATH_PREFIX,
   ITGI_PATH_PREFIX,
+  FG_PATH_PREFIX,
 } from './routes/index.js';
 
 let sweeper = null;
@@ -85,6 +90,7 @@ export async function startNivabupa() {
   console.log(`  Frontend redirect  → ${config.frontendUrl}${config.frontendReturnPath}`);
 
   reportItgi(alias);
+  reportFg(alias);
 
   const dbStatus = await db.verifyConnection();
   if (dbStatus.ok) {
@@ -164,6 +170,84 @@ function reportItgi(alias) {
 
   if (missing.length > 0) {
     console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
+}
+
+// The Future Generali half of the boot banner.
+//
+// Printed even when FG is not configured, and it says so — same reasoning as
+// reportItgi: an operator who expected the endpoints to be live needs to see
+// that they are not, and one who never set FG up needs to see that nothing is
+// broken. Neither state affects Niva Bupa or IFFCO Tokio, and neither stops this
+// process starting.
+//
+// No credential, vendor code or agent code is printed. The endpoint hosts are —
+// those are the lines that surface the accident this report exists for.
+function reportFg(alias) {
+  console.log('');
+  console.log('🩺 Future Generali Health (TCS BO service)');
+  console.log('');
+
+  if (fgIsUnconfigured()) {
+    console.log('  Not configured — the /future-generali endpoints answer 503 naming what is missing.');
+    console.log('  Set FG_BO_BASE_URL, FG_VENDOR_CODE, FG_AGENT_CODE and FG_BRANCH_CODE to enable.');
+    console.log('  Niva Bupa and IFFCO Tokio are unaffected.');
+    return;
+  }
+
+  const missing = missingFgVariables();
+  const paymentMissing = missingFgPaymentVariables();
+
+  console.log('  CONFIG   : GET  /future-generali/config/test');
+  console.log('  QUOTE    : POST /future-generali/quote            CreatePolicy  METHOD=ENQ');
+  console.log('  PROPOSAL : POST /future-generali/proposal         HealthPreCRTValidate');
+  console.log('  ISSUE    : POST /future-generali/issue            CreatePolicy  METHOD=CRT');
+  console.log('  CKYC     : POST /future-generali/ckyc/create');
+  console.log('  CKYC     : POST /future-generali/ckyc/status');
+  console.log('  PAYMENT  : POST /future-generali/payment/session  (builds the gateway form)');
+  console.log('  CALLBACK : ALL  /future-generali/payment/return   ⚠️ FG POST the outcome here');
+  console.log('  RESULT   : GET  /future-generali/payment/result/:token');
+  console.log('  ISSUE    : POST /future-generali/payment/issue    (at most once per payment)');
+  console.log('  DOCUMENT : GET  /future-generali/policy/:policyNo/pdf');
+  console.log('  DOCUMENT : GET  /future-generali/policy/:policyNo/pdf/download');
+  console.log('');
+  if (alias) {
+    console.log(`  (every /future-generali route is also served under the ${alias} prefix)`);
+  }
+  console.log(`  BO service         → ${config.fg.boBaseUrl}${config.fg.paths.boService}`);
+  console.log(`  Document service   → ${config.fg.pdfBaseUrl}${config.fg.paths.pdfService}`);
+  console.log(`  CKYC service       → ${fgCkycFlavour()}`);
+  console.log(`  Payment gateway    → ${config.fg.payment.gatewayUrl || '(FG_PAYMENT_GATEWAY_URL not set)'}`);
+  console.log(`  Frontend redirect  → ${config.frontendUrl}${config.fg.frontendReturnPath}`);
+
+  // Unlike ITGI, FG hold no registered return URL: this service SENDS the
+  // ResponseURL on every payment form, so this variable alone decides where the
+  // outcome lands. If it does not name a route this process serves, a paid
+  // buyer's WS_P_ID and PGID — which issuance is impossible without — are lost.
+  if (config.fg.payment.returnUrl) {
+    const matches = config.fg.payment.returnUrl.endsWith('/future-generali/payment/return');
+    console.log(`  FG posts outcome to → ${config.fg.payment.returnUrl} ${matches ? '✅' : '❌ NOT a route this service serves'}`);
+    if (!matches) {
+      console.error('  ❌ FG_PAYMENT_RETURN_URL does not end in /future-generali/payment/return.');
+      console.error('     A completed payment will 404 and its references will be lost.');
+    }
+  } else {
+    console.warn('  ⚠️  FG_PAYMENT_RETURN_URL is not set — the payment routes answer 503.');
+    console.warn(`     It must end in ${alias || ''}/future-generali/payment/return`);
+  }
+
+  // Quoting works without this; proposal and issuance do not.
+  if (!config.fg.bancaChannel) {
+    console.warn('  ⚠️  FG_BANCA_CHANNEL is not set — quotes work, but every PROPOSAL and');
+    console.warn('     ISSUANCE fails with "BancaChannel Value INVALID". Ask FG to issue it.');
+  }
+
+  if (missing.length > 0) {
+    console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
+  if (missing.length === 0 && paymentMissing.length > 0) {
+    console.warn(`  ⚠️  Payment not configured — missing ${paymentMissing.join(', ')}.`);
+    console.warn('     Quote, proposal and CKYC work; /future-generali/payment/* answers 503.');
   }
 }
 

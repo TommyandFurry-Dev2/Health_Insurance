@@ -10,6 +10,7 @@ import payment_routes from './payment.routes.js';
 import case_routes from './case.routes.js';
 import journey_routes from './journey.routes.js';
 import itgi_routes from './itgi.routes.js';
+import fg_routes from './fg.routes.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
@@ -38,6 +39,18 @@ export const NIVABUPA_PATH_PREFIX = '/nivabupa';
 // redirect to; it could only move this service's route away from it, which is
 // precisely the failure that loses a policy number.
 export const ITGI_PATH_PREFIX = '/iffcotokio';
+
+// Every Future Generali route lives under this one prefix, and so does every
+// piece of its middleware — the same scoping property the two prefixes above
+// have, and for the same reason: it lets createFgRouter() be mounted twice (at
+// '/' and at the compatibility alias) without its middleware running twice.
+//
+// A literal, not env-driven, for the same reason ITGI_PATH_PREFIX is not: it is
+// the tail of the ResponseURL this service sends to FG's payment gateway on
+// every payment, so an env var here could not change where FG post the outcome
+// — it could only move this service's route away from it, which is precisely
+// the failure that loses a paid buyer's WS_P_ID and PGID.
+export const FG_PATH_PREFIX = '/future-generali';
 
 // verify: captures the exact raw bytes on req.rawBody before the body is
 // decoded — kept from the original backend for diagnosing the NivaBupa
@@ -154,6 +167,58 @@ export function createItgiRouter() {
   // app.js's own handlers instead of being answered here.
   router.use(ITGI_PATH_PREFIX, notFound);
   router.use(ITGI_PATH_PREFIX, errorHandler);
+
+  return router;
+}
+
+// The Future Generali router — a sibling of the two above, built the same way
+// and scoped just as tightly to its own prefix. Kept separate rather than
+// folded into either for the same reason they are separate from each other: the
+// three integrations must be able to fail independently. Nothing here can
+// affect a NivaBupa or IFFCO Tokio request, and an FG deployment that was never
+// configured simply answers 503 on its own paths.
+//
+// Three differences from the NivaBupa stack, each deliberate:
+//   * body parsing — FG's payment gateway posts its callback as a FORM body,
+//     not JSON, so the urlencoded parser is load-bearing here rather than
+//     defensive. Without it the callback body is empty and a paid customer
+//     looks unpaid.
+//   * no rate limiting — same reason as ITGI, and sharper: FG POST the payment
+//     outcome to /future-generali/payment/return, and a 429 there means the
+//     buyer paid and the WS_P_ID and PGID that issuance is impossible without
+//     were thrown away.
+//   * its own CORS list — FG_CORS_ORIGINS, falling back to the shared one.
+export function createFgRouter() {
+  const router = express.Router();
+
+  router.use(
+    FG_PATH_PREFIX,
+    cors(corsOptions(config.fg.corsOrigins)),
+    express.json({ limit: config.fg.jsonBodyLimit, verify: captureRawBody }),
+    // FG's payment gateway answers with a form POST. `extended: true` because
+    // the callback is read as a plain key/value map either way, and matching
+    // the other routers costs nothing.
+    express.urlencoded({ extended: true, limit: config.fg.jsonBodyLimit, verify: captureRawBody }),
+    logRequest,
+  );
+
+  // The same optional journey resolution the other two routers use, reused
+  // rather than reimplemented. It hangs an optional journey on the request so
+  // FG calls can be audited against it, and it DELETES journeyId / resumeToken
+  // from the body so neither can be forwarded into an FG payload — FG's <Root>
+  // builder would silently ignore them, but the payment session stores the
+  // proposal verbatim and they have no business being in it.
+  //
+  // Its journey-API bypass keys on '/nivabupa/journey', which no FG path
+  // matches, so every FG request takes the normal branch.
+  router.use(FG_PATH_PREFIX, resolveJourney);
+
+  router.use(fg_routes);
+
+  // Path-scoped, so a request that is not for this router falls through to
+  // app.js's own handlers instead of being answered here.
+  router.use(FG_PATH_PREFIX, notFound);
+  router.use(FG_PATH_PREFIX, errorHandler);
 
   return router;
 }

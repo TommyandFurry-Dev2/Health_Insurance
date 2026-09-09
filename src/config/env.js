@@ -20,6 +20,7 @@ import dotenv from 'dotenv';
 import {
   NIVABUPA_UAT_DEFAULTS as NB,
   ITGI_DEFAULTS as IT,
+  FG_DEFAULTS as FG,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -56,6 +57,18 @@ function numberEnvOr(name, fallback) {
   return fallback;
 }
 
+// Read a boolean. Accepts the spellings an operator actually types in a .env
+// rather than only "true", and — unlike the `=== '1'` debug flags above — takes
+// a default, because two of the Future Generali switches default to ON.
+function boolEnvOr(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    usedFallbacks.add(name);
+    return fallback;
+  }
+  return ['true', '1', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
 // DB_* are the variable names this service has always used and they stay
 // authoritative so an existing .env keeps working unchanged. NIVABUPA_DB_* is
 // accepted as a higher-precedence alias: `DB_HOST` is generic enough to collide
@@ -82,8 +95,8 @@ const dbPassword = () => {
 
 // Read with NO fallback and NO fallback record: used for values that have no
 // bundled default anywhere in this codebase (the two Case API credentials, and
-// every environment-dependent IFFCO Tokio value). An empty string is unset —
-// a blank line in .env is not a credential.
+// every environment-dependent IFFCO Tokio and Future Generali value). An empty
+// string is unset — a blank line in .env is not a credential.
 //
 // The difference from envOr() matters: envOr records the name so the boot report
 // can say "this came from defaults.js". These have no default to come from, so
@@ -328,6 +341,206 @@ const config = {
       || APP_DEFAULTS.corsOrigins,
   },
 
+  // ── Future Generali (FG) — TCS BO health service ───────────────────────────
+  //
+  // Configured the IFFCO Tokio way, not the NivaBupa way: every
+  // environment-dependent value below is read from the environment ONLY, with
+  // no bundled host, credential, partner code or gateway URL anywhere in this
+  // codebase (see the FG note in defaults.js). So:
+  //
+  //   * UAT    → set FG_BO_BASE_URL and the UAT vendor/agent/branch codes
+  //   * PROD   → change those same variables, nothing else
+  //   * unset  → the /future-generali endpoints answer 503 naming what is
+  //              missing, and neither NivaBupa nor IFFCO Tokio is affected
+  //
+  // Nothing here is reachable from the NivaBupa or IFFCO Tokio flows, and
+  // nothing in either of those reads it.
+  fg: {
+    // Dumps the full upstream request/response of every FG call to stdout. Off
+    // unless set: the <Root> payload carries PAN, Aadhaar, DOB, height/weight
+    // and nominee detail in the clear. Failures are logged regardless.
+    debug: process.env.FG_DEBUG === '1',
+
+    // ── The four without which no FG call can be made ──
+    //
+    // FG's BO service is published over http, NOT https, on the UAT host: the
+    // WSDL's sole port is BasicHttpBinding_IService with
+    // <soap:address location="http://…/BO/Service.svc"/> and no transport
+    // security bound. The same host answers a POST over https with a zero-byte
+    // 404, because nothing is listening for it there. That is FG's binding, not
+    // a preference of ours — set this to https the day FG publish an https one
+    // (production may already have it).
+    boBaseUrl: trimTrailingSlash(requiredEnv('FG_BO_BASE_URL')),
+    vendorCode: requiredEnv('FG_VENDOR_CODE'),
+    agentCode: requiredEnv('FG_AGENT_CODE'),
+    branchCode: requiredEnv('FG_BRANCH_CODE'),
+
+    // Sent as <VendorUserId>. FG issue it alongside the vendor code; their own
+    // samples repeat the vendor code here, so it falls back to that rather than
+    // going out empty.
+    vendorUserId: requiredEnv('FG_VENDOR_USER_ID') || requiredEnv('FG_VENDOR_CODE') || null,
+
+    // The policy-document service is a DIFFERENT WCF endpoint (contract
+    // IService1) that DOES answer over https, so it can legitimately be pointed
+    // somewhere the BO service is not. Falls back to the BO host.
+    pdfBaseUrl: trimTrailingSlash(requiredEnv('FG_PDF_BASE_URL'))
+      || trimTrailingSlash(requiredEnv('FG_BO_BASE_URL')),
+
+    // Service paths appended to the base URLs, and the SOAP namespace. The API
+    // contract, identical in UAT and production — overridable only so an
+    // FG-side path change stays a .env edit. See defaults.js.
+    paths: {
+      boService: envOr('FG_BO_SERVICE_PATH', FG.paths.boService),
+      pdfService: envOr('FG_PDF_SERVICE_PATH', FG.paths.pdfService),
+    },
+    soapTempuri: envOr('FG_SOAP_TEMPURI', FG.soapTempuri),
+
+    // ⚠️ REQUIRED by HealthPreCRTValidate and by issuance; quoting works
+    // without it. Both fail with "BancaChannel Value INVALID" until it is
+    // correct, and the valid code is NOT in the integration kit and cannot be
+    // derived — FG must issue it for the configured vendor code. Overridable
+    // per request via risk.bancaChannel.
+    bancaChannel: requiredEnv('FG_BANCA_CHANNEL') || null,
+
+    // ── UAT TEST SWITCH — leave OFF outside a deliberate experiment ──
+    // When on, CRT calls always send an EMPTY <ClientID>, even after FG answer
+    // "Please retry with Client ID <n>". Exists to test whether the proposal
+    // flow completes on the empty-ClientID path. Nothing else about the request
+    // changes. OFF by default, so the shipped behaviour is FG's documented
+    // handshake.
+    suppressClientIdOnCrt: boolEnvOr('FG_SUPPRESS_CLIENT_ID_ON_CRT', false),
+
+    // Receipt date format — see FG_DEFAULTS.receiptDateWithTime.
+    receiptDateWithTime: boolEnvOr('FG_RECEIPT_DATE_WITH_TIME', FG.receiptDateWithTime),
+
+    payment: {
+      // Where the buyer's browser is POSTed to pay.
+      //
+      // ONE variable, no default, and deliberately not a UAT/production pair
+      // with a boolean between them: a build must not be one unset flag away
+      // from taking real money on a test tenant, or from sending a live buyer
+      // to UAT. Whatever is in .env is the only gateway this process can reach.
+      gatewayUrl: requiredEnv('FG_PAYMENT_GATEWAY_URL') || null,
+
+      // OURS, not FG's: the ResponseURL posted to their gateway on every
+      // payment, which FG then POST the (encrypted) outcome back to. Unlike
+      // ITGI's equivalent this one IS sent on every request rather than
+      // registered on their side — so it must be reachable from FG's servers,
+      // and it must point at THIS service's callback route, never at the SPA
+      // (a static page cannot read a POST body).
+      returnUrl: requiredEnv('FG_PAYMENT_RETURN_URL') || null,
+
+      // Response encryption (v1.30, revised v1.35). Single DES, expressed as
+      // 3DES with the key repeated — see helpers/fgPayment.helper.js. NO
+      // bundled default: these are credentials, and .env.example documents the
+      // values FG publish for them.
+      cryptoKey: requiredEnv('FG_PG_CRYPTO_KEY') || null,
+      cryptoIv: requiredEnv('FG_PG_CRYPTO_IV') || null,
+
+      // ── Transaction revalidation (FG's Common Reconciliation Service) ─────
+      //
+      // ⚠️ THIS IS A SECURITY CONTROL, not a reconciliation nicety, and FG say
+      // so themselves in NewPaymentIntegration v1.39:
+      //
+      //   "As a recommended security measure, you validate each transaction
+      //    response via an API call. Transaction revalidation protects from
+      //    request/response tampering possible in browser calls."
+      //
+      // The reason it matters here is specific. The payment outcome arrives as
+      // a form POST to a PUBLIC callback route, and the DES key that "protects"
+      // it is printed in FG's own integration PDF — the same key for every
+      // partner. So the ciphertext authenticates nothing: anyone holding the kit
+      // can encrypt Response=Success for a TransactionID and post it. Without
+      // revalidation, the only thing standing between that and a free policy is
+      // that this service issues solely for a TransactionID it is holding a
+      // proposal against — which a buyer who started a payment and abandoned it
+      // has.
+      //
+      // Calling FG server-to-server closes it: their answer is the one thing an
+      // attacker cannot forge.
+      //
+      // No default URL — the live service host belongs in .env like every other
+      // FG endpoint. Unset means revalidation is skipped and a loud warning is
+      // logged at boot and on every issuance.
+      reconcileUrl: requiredEnv('FG_RECONCILE_URL') || null,
+      // <source> on the request. A protocol constant: FG's own example sends
+      // "webaggregator" (the alternative, "Quickpay", is their retail channel).
+      reconcileSource: envOr('FG_RECONCILE_SOURCE', FG.reconcileSource),
+      // How much the reconciled amount may differ from the amount collected
+      // before it is treated as tampering rather than rounding. FG return the
+      // gateway's own figure, which can be a rupee off a paise-level premium.
+      reconcileAmountTolerance: numberEnvOr(
+        'FG_RECONCILE_AMOUNT_TOLERANCE', FG.reconcileAmountTolerance
+      ),
+
+      // Gateway identity issued by FG. 'NA' is FG's own documented value for a
+      // partner they have issued none to — but these go INTO the CheckSum, so a
+      // partner who was issued real ones and left them unset gets a checksum FG
+      // reject. config/validate.js names them at boot when they fall back.
+      userIdentifier: envOr('FG_PG_USER_IDENTIFIER', FG.paymentUserIdentifier),
+      userId: envOr('FG_PG_USER_ID', FG.paymentUserId),
+
+      // "Vendor Type" — v1.39's request table: "Blank[.Net] or 0[.Net] or
+      // 1[PHP]". It declares which reference implementation produced the
+      // CheckSum, not who we are, and it is optional.
+      //
+      // It does NOT switch the response format, though the document's layout
+      // invites that reading. The only Response section is unconditional —
+      // "Response Parameter will be Encrypted… Response Field Name is
+      // ResponseData" — and the changelog dates it to v1.30, "Added Encryption
+      // & Decryption process in Response", nine revisions before this. The
+      // "For .Net / For PHP / For Java" headings nearby are CheckSum code
+      // samples in three languages, not three response contracts.
+      vendor: envOr('FG_PG_VENDOR', FG.paymentVendor),
+
+      // How long a parsed payment result stays retrievable by its token.
+      resultTtlMs: numberEnvOr('FG_PG_RESULT_TTL_MS', FG.resultTtlMs),
+    },
+
+    // Legacy NL-CKYC. Still answers, but mints short `PR_`+10 references, while
+    // every working proposal sample FG have sent carries the `PR_`+13 reference
+    // only GC-CKYC issues.
+    ckyc: {
+      baseUrl: trimTrailingSlash(requiredEnv('FG_CKYC_BASE_URL')) || null,
+      token: requiredEnv('FG_CKYC_TOKEN') || null,
+      clientId: requiredEnv('FG_CKYC_CLIENT_ID') || null,
+      systemName: requiredEnv('FG_CKYC_SYSTEM_NAME') || null,
+    },
+
+    // GC-CKYC 3.0.0 — Generali Central's current service, and the one that
+    // issues the reference FG's own working samples carry. Selected when
+    // FG_GCKYC_ENABLED is on AND all four credentials are present; a PARTIAL
+    // configuration falls back to the legacy service with a warning rather than
+    // failing the KYC step outright.
+    gcKyc: {
+      enabled: boolEnvOr('FG_GCKYC_ENABLED', false),
+      tokenUrl: requiredEnv('FG_GCKYC_TOKEN_URL') || null,
+      baseUrl: trimTrailingSlash(requiredEnv('FG_GCKYC_BASE_URL')) || null,
+      // Consumer key/secret of the API-manager application (HTTP Basic).
+      clientKey: requiredEnv('FG_GCKYC_CLIENT_KEY') || null,
+      clientSecret: requiredEnv('FG_GCKYC_CLIENT_SECRET') || null,
+      // Resource-owner credentials — a password grant, not client_credentials.
+      username: requiredEnv('FG_GCKYC_USERNAME') || null,
+      password: requiredEnv('FG_GCKYC_PASSWORD') || null,
+      // Drives FG's post-verification redirect. Distinct from legacy "Webagg".
+      systemName: requiredEnv('FG_GCKYC_SYSTEM_NAME') || null,
+      tokenSkewSeconds: numberEnvOr('FG_GCKYC_TOKEN_SKEW_SECONDS', 60),
+    },
+
+    // SPA route the payment return handler 302s the buyer to, appended to
+    // FRONTEND_URL with only an opaque token as a query string.
+    frontendReturnPath: envOr('FG_FRONTEND_RETURN_PATH', FG.frontendReturnPath),
+
+    jsonBodyLimit: envOr('FG_JSON_BODY_LIMIT', FG.jsonBodyLimit),
+
+    // Falls back to the NivaBupa/global list so one origin allow-list covers the
+    // whole service; set FG_CORS_ORIGINS only to diverge from it.
+    corsOrigins: process.env.FG_CORS_ORIGINS
+      || process.env.NIVABUPA_CORS_ORIGINS
+      || process.env.CORS_ORIGINS
+      || APP_DEFAULTS.corsOrigins,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),
@@ -335,6 +548,10 @@ const config = {
     dataPush: numberEnvOr('NIVABUPA_DATAPUSH_TIMEOUT_MS', TIMEOUT_DEFAULTS.dataPush),
     itgi: numberEnvOr('ITGI_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.itgi),
     itgiCkycCreate: numberEnvOr('ITGI_CKYC_CREATE_TIMEOUT_MS', TIMEOUT_DEFAULTS.itgiCkycCreate),
+    fg: numberEnvOr('FG_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.fg),
+    fgIssuance: numberEnvOr('FG_ISSUANCE_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgIssuance),
+    fgCkyc: numberEnvOr('FG_CKYC_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgCkyc),
+    fgPdf: numberEnvOr('FG_PDF_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgPdf),
   },
 };
 
@@ -360,6 +577,76 @@ export function missingItgiVariables() {
 // configuration, which is a mistake worth warning about at boot.
 export function itgiIsUnconfigured() {
   return missingItgiVariables().length === 4;
+}
+
+// The four variables without which no Future Generali SOAP call can be made.
+//
+// One definition, three readers — config/validate.js reports them at boot,
+// services/fgApi.service.js refuses the call at request time, and
+// GET /future-generali/config/test answers with them. Keeping it here rather
+// than in any of those is what stops them disagreeing about what "configured"
+// means. Names only, never values.
+export function missingFgVariables() {
+  const missing = [];
+  if (!config.fg.boBaseUrl) missing.push('FG_BO_BASE_URL');
+  if (!config.fg.vendorCode) missing.push('FG_VENDOR_CODE');
+  if (!config.fg.agentCode) missing.push('FG_AGENT_CODE');
+  if (!config.fg.branchCode) missing.push('FG_BRANCH_CODE');
+  return missing;
+}
+
+// True when NONE of the four are set — a deployment that was simply never given
+// Future Generali credentials. Distinguished from a PARTIAL configuration.
+export function fgIsUnconfigured() {
+  return missingFgVariables().length === 4;
+}
+
+// What the PAYMENT leg additionally needs, over and above the four above.
+//
+// Separate from missingFgVariables() because the legs fail independently and an
+// operator needs to know which one is broken: quoting and proposing work
+// perfectly with no gateway configured, and the first sign of the gap would
+// otherwise be a buyer who cannot pay. The crypto pair is the sharpest case —
+// without it FG's callback cannot be decrypted, which is reported as
+// `unverified` (money may have moved) rather than as a failed payment.
+export function missingFgPaymentVariables() {
+  const missing = [];
+  if (!config.fg.payment.gatewayUrl) missing.push('FG_PAYMENT_GATEWAY_URL');
+  if (!config.fg.payment.returnUrl) missing.push('FG_PAYMENT_RETURN_URL');
+  if (!config.fg.payment.cryptoKey) missing.push('FG_PG_CRYPTO_KEY');
+  if (!config.fg.payment.cryptoIv) missing.push('FG_PG_CRYPTO_IV');
+  return missing;
+}
+
+// Which CKYC service this process will actually use, and whether it can.
+//
+// GC-CKYC only when it is switched on AND fully credentialed: a half-configured
+// GC-CKYC falls back to the legacy service rather than failing the KYC step, so
+// a missing secret degrades instead of breaking the flow. It matters which one
+// runs — every working proposal sample FG have sent carries a 13-character
+// `PR_` reference, which only GC-CKYC issues.
+export function fgCkycFlavour() {
+  const gc = config.fg.gcKyc;
+  const ready = gc.enabled
+    && Boolean(gc.tokenUrl && gc.baseUrl && gc.clientKey && gc.clientSecret && gc.username && gc.password);
+  if (ready) return 'gc-ckyc-3.0.0';
+  return config.fg.ckyc.baseUrl ? 'nl-ckyc' : 'none';
+}
+
+// GC-CKYC variables that are set to be used but are not usable. Empty when
+// GC-CKYC is off (nothing is expected of it) or fully configured.
+export function partialFgGcKycVariables() {
+  const gc = config.fg.gcKyc;
+  if (!gc.enabled) return [];
+  const byKey = {
+    tokenUrl: 'FG_GCKYC_TOKEN_URL',
+    baseUrl: 'FG_GCKYC_BASE_URL',
+    clientKey: 'FG_GCKYC_CLIENT_KEY',
+    clientSecret: 'FG_GCKYC_CLIENT_SECRET',
+    username: 'FG_GCKYC_USERNAME',
+    password: 'FG_GCKYC_PASSWORD',
+  };
+  return Object.entries(byKey).filter(([key]) => !gc[key]).map(([, name]) => name);
 }
 
 // Names only — never values. Consumed by config/validate.js.

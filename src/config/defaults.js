@@ -121,6 +121,101 @@ export const ITGI_DEFAULTS = {
   maxRetries: 2,
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Future Generali (FG) — TCS "BO" health SOAP service, GC-CKYC/NL-CKYC and the
+// web-aggregator payment gateway.
+//
+// Follows the ITGI rule above, not the NivaBupa one: there is NO host, NO
+// credential, NO agent/vendor/branch code and NO gateway URL here, and there
+// must never be one. A process without FG_BO_BASE_URL, FG_VENDOR_CODE,
+// FG_AGENT_CODE and FG_BRANCH_CODE cannot reach FG at all — the endpoints
+// answer 503 naming the missing variables instead of quietly transacting
+// against UAT, which is what a bundled default does the first time somebody
+// deploys without setting them.
+//
+// Two things in particular are deliberately absent, because the working
+// NovaCred implementation bundled them and that is exactly what this project's
+// ITGI rule exists to prevent:
+//
+//   * the payment gateway URL. That implementation shipped BOTH a UAT and a
+//     PRODUCTION URL plus a boolean to pick between them, so a build could be
+//     one unset boolean away from taking real money on a test tenant, or from
+//     sending a live buyer to UAT. Here there is ONE variable,
+//     FG_PAYMENT_GATEWAY_URL, with no default: whichever environment's URL is
+//     in .env is the only one this process can reach.
+//   * the DES key and IV that decrypt FG's payment response. They are
+//     credentials, they live in .env, and .env.example documents which values
+//     FG publish for them.
+//
+// What IS here is CONTRACT — the service paths appended to a base URL, the SOAP
+// namespace, FG's documented "partner has none" placeholders, and our own route
+// prefixes. Those are identical in UAT and production (they are what the
+// endpoints are CALLED, not where they live), and they stay overridable so a
+// path change on FG's side is a .env edit rather than a release.
+// ─────────────────────────────────────────────────────────────────────────────
+export const FG_DEFAULTS = {
+  // Appended to FG_BO_BASE_URL / FG_PDF_BASE_URL. Verified against the TCS
+  // Health API Kit's own Postman collections.
+  paths: {
+    // The BO service — every quote, proposal and issuance. Contract: IService.
+    boService: '/BO/Service.svc',
+    // The policy document — a DIFFERENT WCF endpoint with a different contract
+    // (IService1). Split out so it can be pointed elsewhere without moving the
+    // BO service.
+    pdfService: '/TCSPDFService/Service1.svc',
+  },
+
+  // The SOAP namespace FG's WSDL publishes. A protocol constant, not an
+  // address: it is never resolved and never differs between environments.
+  soapTempuri: 'http://tempuri.org/',
+
+  // Every FG route lives under this prefix. Not env-driven, for the same reason
+  // ITGI_DEFAULTS.pathPrefix is not: it is baked into the route table
+  // (routes/fg.routes.js) AND it is the tail of the ResponseURL handed to FG's
+  // gateway on every payment, so an env var here could change neither.
+  pathPrefix: '/future-generali',
+
+  // SPA route the payment return redirects to, appended to FRONTEND_URL. Only
+  // an opaque token travels on that URL — never a payment detail.
+  frontendReturnPath: '/fg-return',
+
+  // FG's documented placeholders for a partner they have issued no gateway
+  // identity to ("NA" per the v1.39 parameter sheet). Protocol values, not
+  // credentials — but they DO go into the CheckSum, so a partner who was issued
+  // real ones and left these unset gets a checksum FG reject. config/validate.js
+  // names them at boot for exactly that reason.
+  paymentUserIdentifier: 'NA',
+  paymentUserId: 'NA',
+  // "Vendor Type": blank/0 = .Net, 1 = PHP (v1.39). Declares which reference
+  // implementation produced the CheckSum, not who we are, and is optional. UAT
+  // accepts '1', which is what has worked to date.
+  paymentVendor: '1',
+
+  // Receipt <TransactionDate>/<TranRefNoDate> carry the time as well as the
+  // date, matching FG's own post-payment issuance sample
+  // ("16/04/2026 10:21:59"). Set FG_RECEIPT_DATE_WITH_TIME=false for the
+  // 10-character form the FHA field table documents.
+  receiptDateWithTime: true,
+
+  // How long a parsed payment result stays retrievable by its token.
+  resultTtlMs: 30 * 60 * 1000,
+
+  // <source> on FG's Common Reconciliation Service (FetchTRNDetails). A
+  // protocol constant, not an address: their own example sends "webaggregator",
+  // the alternative being "Quickpay" for their retail channel.
+  reconcileSource: 'webaggregator',
+
+  // Rupees the reconciled amount may differ from the amount collected before it
+  // is treated as tampering rather than rounding. FG return the gateway's own
+  // figure, which can sit a rupee off a paise-level premium — their sample
+  // shows PaymentAmount 2530 against premiums carried to two decimals.
+  reconcileAmountTolerance: 1,
+
+  // FG's CKYC create/status bodies are small, but the callback and proposal
+  // payloads are not, and the FG router parses form posts from the gateway.
+  jsonBodyLimit: '2mb',
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.
@@ -181,6 +276,28 @@ export const TIMEOUT_DEFAULTS = {
   // every health call. It writes to CERSAI through ITGI, and a timeout costs
   // the customer their document uploads, so it gets triple the health budget.
   itgiCkycCreate: 120000,
+
+  // ── Future Generali ──
+  // Quote (ENQ) and proposal validation (CRT) answered in 1.6–6.8s on FG's UAT.
+  // 30s leaves headroom without letting a hung SOAP call occupy a worker.
+  fg: 30000,
+  // Issuance gets its own, much longer budget. CreatePolicy with a filled
+  // Receipt writes a policy, a receipt AND an application at FG's end; quoting
+  // and validating write nothing. Measured on UAT 2026-08-17: a real issuance
+  // did not answer inside 30s at all.
+  //
+  // That is the expensive failure in this whole integration — the premium has
+  // already been collected by the time issuance runs, so giving up early leaves
+  // a PAID customer with an outcome nobody can see, and the service has to
+  // record it as `unresolved` rather than as a failure precisely because FG may
+  // have created the policy anyway. Waiting is strictly better than guessing.
+  fgIssuance: 120000,
+  // GC-CKYC/NL-CKYC are ordinary REST calls, but CKYC goes out to CERSAI behind
+  // FG, so it gets more room than a quote.
+  fgCkyc: 60000,
+  // The policy document is fetched over a link FG return, and the documents run
+  // to ~500 KB.
+  fgPdf: 60000,
 };
 
 // Ours, not NivaBupa's — see config/env.js for why each default is what it is.
