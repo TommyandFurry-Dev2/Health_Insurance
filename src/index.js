@@ -23,6 +23,7 @@
 import config, {
   missingItgiVariables, itgiIsUnconfigured,
   missingFgVariables, missingFgPaymentVariables, fgIsUnconfigured, fgCkycFlavour,
+  missingIciciVariables, iciciIsUnconfigured,
 } from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
@@ -32,10 +33,12 @@ export {
   createNivabupaRouter,
   createItgiRouter,
   createFgRouter,
+  createIciciRouter,
   createNivabupaProbeRouter,
   NIVABUPA_PATH_PREFIX,
   ITGI_PATH_PREFIX,
   FG_PATH_PREFIX,
+  ICICI_PATH_PREFIX,
 } from './routes/index.js';
 
 let sweeper = null;
@@ -91,6 +94,7 @@ export async function startNivabupa() {
 
   reportItgi(alias);
   reportFg(alias);
+  reportIcici(alias);
 
   const dbStatus = await db.verifyConnection();
   if (dbStatus.ok) {
@@ -248,6 +252,55 @@ function reportFg(alias) {
   if (missing.length === 0 && paymentMissing.length > 0) {
     console.warn(`  ⚠️  Payment not configured — missing ${paymentMissing.join(', ')}.`);
     console.warn('     Quote, proposal and CKYC work; /future-generali/payment/* answers 503.');
+  }
+}
+
+// The ICICI Lombard half of the boot banner.
+//
+// Printed even when ICICI is not configured, and it says so — same reasoning as
+// reportItgi and reportFg. Neither state affects any other insurer, and neither
+// stops this process starting.
+//
+// No login, password, AES key or client name is printed. The host is — it is
+// the line that shows UAT against a production NODE_ENV.
+function reportIcici(alias) {
+  console.log('');
+  console.log('🩺 ICICI Lombard — Elevate Health');
+  console.log('');
+
+  if (iciciIsUnconfigured()) {
+    console.log('  Not configured — the /icici-lombard endpoints answer 503 naming what is missing.');
+    console.log('  Set EL_BASE_URL, EL_LOGIN and EL_PASSWORD (+ EL_PASSWORD_PRE_ENCRYPTED or EL_AES_KEY).');
+    console.log('  Niva Bupa, IFFCO Tokio and Future Generali are unaffected.');
+    return;
+  }
+
+  const missing = missingIciciVariables();
+
+  console.log('  CONFIG   : GET  /icici-lombard/config/test');
+  console.log('  QUOTE    : POST /icici-lombard/quote             premium (mints TransactionId bnc_…)');
+  console.log('  CKYC     : POST /icici-lombard/ckyc');
+  console.log('  CKYC     : POST /icici-lombard/ckyc/ovd          (document-upload fallback)');
+  console.log('  PROPOSAL : POST /icici-lombard/proposal          proposal-payment → PaymentUrl');
+  console.log('  STATUS   : POST /icici-lombard/policy/status     authoritative after hosted payment');
+  console.log('  ISSUE    : POST /icici-lombard/issue             policy sync (partner-collected payment)');
+  console.log('  DOCUMENT : GET  /icici-lombard/coi/:transactionId');
+  console.log('  EMI      : POST /icici-lombard/emi/due');
+  console.log('  EMI      : POST /icici-lombard/emi/process');
+  console.log('  ZONE     : POST /icici-lombard/zone');
+  console.log('');
+  if (alias) {
+    console.log(`  (every /icici-lombard route is also served under the ${alias} prefix)`);
+  }
+  console.log(`  Upstream base      → ${config.icici.baseUrl || '(EL_BASE_URL not set)'}`);
+  console.log(`  Password           → ${config.icici.passwordPreEncrypted ? 'sent pre-encrypted' : `encrypted here (${config.icici.aesMode})`}`);
+
+  if (!config.icici.clientName) {
+    console.warn('  ⚠️  EL_CLIENT_NAME is not set — the certificate-of-insurance path will carry an');
+    console.warn('     empty {clientname} segment and /icici-lombard/coi will fail.');
+  }
+  if (missing.length > 0) {
+    console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
   }
 }
 

@@ -238,6 +238,19 @@ const EXPECTED_ROUTES = [
   'POST /iffcotokio/policy-download',
   'POST /iffcotokio/kyc/fetch',
   'POST /iffcotokio/kyc/create',
+  // ICICI Lombard. Registered whether or not ICICI is configured — an
+  // unconfigured deployment answers 503 on these paths rather than 404.
+  'GET /icici-lombard/config/test',
+  'POST /icici-lombard/quote',
+  'POST /icici-lombard/ckyc',
+  'POST /icici-lombard/ckyc/ovd',
+  'POST /icici-lombard/proposal',
+  'POST /icici-lombard/policy/status',
+  'POST /icici-lombard/issue',
+  'GET /icici-lombard/coi/:transactionId',
+  'POST /icici-lombard/emi/due',
+  'POST /icici-lombard/emi/process',
+  'POST /icici-lombard/zone',
   'GET /healthz',
   'GET /readyz',
 ];
@@ -245,7 +258,7 @@ const EXPECTED_ROUTES = [
 // Both insurer prefixes are served a second time under the compatibility alias.
 // For ITGI that is not merely a compatibility nicety: the payment response URL
 // registered with them goes through it (…/health/iffcotokio/payment/return).
-const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/'];
+const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/', '/icici-lombard/'];
 
 check(`all ${EXPECTED_ROUTES.length} routes registered at the primary mount`, () => {
   const missing = EXPECTED_ROUTES.filter((route) => !registered.has(route));

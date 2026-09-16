@@ -216,6 +216,64 @@ export const FG_DEFAULTS = {
   jsonBodyLimit: '2mb',
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ICICI Lombard — "Elevate" Health (JWT-authenticated REST/JSON).
+//
+// Follows the ITGI / FG rule, not the NivaBupa one: there is NO host, NO login,
+// NO password, NO AES key and NO client name here, and there must never be one.
+// The working NovaCred implementation bundled the UAT host as a default for
+// EL_BASE_URL — that is exactly the default this rule exists to remove. A
+// process without EL_BASE_URL, EL_LOGIN and EL_PASSWORD (plus EL_AES_KEY unless
+// the password is supplied pre-encrypted) cannot reach ICICI at all; the
+// /icici-lombard endpoints answer 503 naming the missing variables.
+//
+// What IS here is CONTRACT — the request paths appended to EL_BASE_URL (from
+// IL's "Elevate_Fresh_API_Kit_V3", "CKYC_API_Kit_V2" and
+// "AccessToken_and_EncryptedKey"), identical in UAT and production, plus the
+// behaviour defaults the working implementation shipped. Paths stay
+// overridable (EL_*_PATH) so a path change on IL's side is a .env edit.
+// ─────────────────────────────────────────────────────────────────────────────
+export const ICICI_DEFAULTS = {
+  paths: {
+    token: '/auth-api/access/token',
+    premium: '/health-fresh/elevate/generic/premium',
+    proposal: '/health-fresh/elevate/generic/proposal-payment',
+    policySync: '/health-servicing/payment/generic/sync',
+    policyStatus: '/health-servicing/proposal/generic/status',
+    emiDue: '/health-servicing/emi/generic/getdue',
+    emiProcess: '/health-servicing/emi/generic/process',
+    // {clientname} and {transactionId} are interpolated per call.
+    coi: '/generic/common/customer/{clientname}/certificate/health/{transactionId}',
+    zone: '/Generic/Health/Zone',
+    ckyc: '/generic/common/ckyc/generic/health/ckyc',
+    ovdInitiate: '/generic/common/ckyc/generic/health/ovdinitiate',
+  },
+
+  // Every ICICI route lives under this prefix. Not env-driven, for the same
+  // reason the other insurer prefixes are not: it is baked into the route table
+  // (routes/icici.routes.js).
+  pathPrefix: '/icici-lombard',
+
+  // IL's usual password scheme when a plaintext password + key are shared.
+  // Unused when EL_PASSWORD_PRE_ENCRYPTED=true.
+  aesMode: 'aes-128-ecb',
+
+  // Refresh the JWT this many seconds before its stated expiry.
+  tokenSkewSeconds: 60,
+
+  // Business-call retries on transport failures and 502/503/504 — the working
+  // implementation's EL_MAX_RETRIES default. The token call uses 1.
+  maxRetries: 2,
+
+  // First retry delay; doubles per attempt. The working implementation's
+  // HTTP_RETRY_BASE_DELAY_MS default.
+  retryBaseDelayMs: 500,
+
+  // The working implementation parsed JSON bodies up to 5mb service-wide; the
+  // OVD upload is the reason ICICI needs more than express's 100kb default.
+  jsonBodyLimit: '5mb',
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.
@@ -298,6 +356,11 @@ export const TIMEOUT_DEFAULTS = {
   // The policy document is fetched over a link FG return, and the documents run
   // to ~500 KB.
   fgPdf: 60000,
+
+  // ── ICICI Lombard ──
+  // The working implementation's HTTP_TIMEOUT_MS default, which every Elevate
+  // call (token included) ran under. Kept under the frontend's 60s axios budget.
+  icici: 30000,
 };
 
 // Ours, not NivaBupa's — see config/env.js for why each default is what it is.

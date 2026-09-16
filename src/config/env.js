@@ -21,6 +21,7 @@ import {
   NIVABUPA_UAT_DEFAULTS as NB,
   ITGI_DEFAULTS as IT,
   FG_DEFAULTS as FG,
+  ICICI_DEFAULTS as IL,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -541,6 +542,80 @@ const config = {
       || APP_DEFAULTS.corsOrigins,
   },
 
+  // ── ICICI Lombard — "Elevate" Health ───────────────────────────────────────
+  //
+  // Configured the IFFCO Tokio / Future Generali way: every environment-
+  // dependent value is read from the environment ONLY, with no bundled host,
+  // login, password, key or client name anywhere in this codebase (see the
+  // ICICI note in defaults.js). So:
+  //
+  //   * UAT    → EL_BASE_URL=https://ilesbapigee.insurancearticlez.com + the UAT login
+  //   * PROD   → EL_BASE_URL=https://janus.icicilombard.com + the production login
+  //   * unset  → the /icici-lombard endpoints answer 503 naming what is missing,
+  //              and NivaBupa, IFFCO Tokio and Future Generali are unaffected
+  //
+  // The variable NAMES are the working implementation's own (EL_*), so its
+  // .env block moves across unchanged.
+  icici: {
+    // Dumps the full upstream request/response of every ICICI call to stdout.
+    // Off unless set: premium, proposal and CKYC bodies carry names, DOBs, PAN
+    // and Aadhaar numbers. Failures are logged regardless.
+    debug: process.env.EL_DEBUG === '1',
+
+    // The host. Every operation appends its own path, so this ONE value moves
+    // the whole integration between environments.
+    baseUrl: trimTrailingSlash(requiredEnv('EL_BASE_URL')),
+
+    login: requiredEnv('EL_LOGIN'),
+    password: requiredEnv('EL_PASSWORD'),
+
+    // IL issue the credential with the password ALREADY AES-encrypted — their
+    // auth spec's Password field is "a valid encrypted password", i.e. the
+    // ciphertext to send. When this is on the password is sent verbatim and no
+    // AES key is needed. Off only if IL share a plaintext password plus the key
+    // to encrypt it with.
+    passwordPreEncrypted: boolEnvOr('EL_PASSWORD_PRE_ENCRYPTED', false),
+
+    // Shared AES key from IL (base64 or raw) — only needed to encrypt a
+    // plaintext password.
+    aesKey: requiredEnv('EL_AES_KEY') || null,
+    aesMode: envOr('EL_AES_MODE', IL.aesMode), // aes-128-ecb | aes-256-ecb | aes-256-cbc
+    aesIv: requiredEnv('EL_AES_IV') || null,   // CBC modes only
+
+    // {clientname} path segment on the COI endpoint. Partner identity issued by
+    // IL, so it has no bundled default.
+    clientName: requiredEnv('EL_CLIENT_NAME') || null,
+
+    tokenSkewSeconds: numberEnvOr('EL_TOKEN_SKEW_SECONDS', IL.tokenSkewSeconds),
+    maxRetries: numberEnvOr('EL_MAX_RETRIES', IL.maxRetries),
+    retryBaseDelayMs: numberEnvOr('EL_RETRY_BASE_DELAY_MS', IL.retryBaseDelayMs),
+
+    // Request paths appended to baseUrl. The API contract, identical in UAT and
+    // production — overridable only so an IL-side path change stays a .env edit.
+    paths: {
+      token: envOr('EL_TOKEN_PATH', IL.paths.token),
+      premium: envOr('EL_PREMIUM_PATH', IL.paths.premium),
+      proposal: envOr('EL_PROPOSAL_PATH', IL.paths.proposal),
+      policySync: envOr('EL_POLICY_SYNC_PATH', IL.paths.policySync),
+      policyStatus: envOr('EL_POLICY_STATUS_PATH', IL.paths.policyStatus),
+      emiDue: envOr('EL_EMI_DUE_PATH', IL.paths.emiDue),
+      emiProcess: envOr('EL_EMI_PROCESS_PATH', IL.paths.emiProcess),
+      coi: envOr('EL_COI_PATH', IL.paths.coi),
+      zone: envOr('EL_ZONE_PATH', IL.paths.zone),
+      ckyc: envOr('EL_CKYC_PATH', IL.paths.ckyc),
+      ovdInitiate: envOr('EL_OVD_INITIATE_PATH', IL.paths.ovdInitiate),
+    },
+
+    jsonBodyLimit: envOr('EL_JSON_BODY_LIMIT', IL.jsonBodyLimit),
+
+    // Falls back to the NivaBupa/global list so one origin allow-list covers the
+    // whole service; set EL_CORS_ORIGINS only to diverge from it.
+    corsOrigins: process.env.EL_CORS_ORIGINS
+      || process.env.NIVABUPA_CORS_ORIGINS
+      || process.env.CORS_ORIGINS
+      || APP_DEFAULTS.corsOrigins,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),
@@ -552,6 +627,7 @@ const config = {
     fgIssuance: numberEnvOr('FG_ISSUANCE_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgIssuance),
     fgCkyc: numberEnvOr('FG_CKYC_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgCkyc),
     fgPdf: numberEnvOr('FG_PDF_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgPdf),
+    icici: numberEnvOr('EL_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.icici),
   },
 };
 
@@ -647,6 +723,30 @@ export function partialFgGcKycVariables() {
     password: 'FG_GCKYC_PASSWORD',
   };
   return Object.entries(byKey).filter(([key]) => !gc[key]).map(([, name]) => name);
+}
+
+// The variables without which no ICICI Lombard call can be made, by name —
+// the working implementation's missingConfigFor('elevate'), unchanged.
+//
+// One definition, three readers: config/validate.js reports them at boot,
+// services/iciciApi.service.js refuses the call at request time, and
+// GET /icici-lombard/config/test answers with them. Names only, never values.
+export function missingIciciVariables() {
+  const missing = [];
+  if (!config.icici.baseUrl) missing.push('EL_BASE_URL');
+  if (!config.icici.login) missing.push('EL_LOGIN');
+  if (!config.icici.password) missing.push('EL_PASSWORD');
+  // Only needed to encrypt a plaintext password. When IL have supplied the
+  // ciphertext directly there is nothing to encrypt and no key to require.
+  if (!config.icici.aesKey && !config.icici.passwordPreEncrypted) missing.push('EL_AES_KEY');
+  return missing;
+}
+
+// True when none of the connection variables are set — a deployment that was
+// simply never given ICICI credentials. Distinguished from a PARTIAL
+// configuration, which is a mistake worth warning about at boot.
+export function iciciIsUnconfigured() {
+  return !config.icici.baseUrl && !config.icici.login && !config.icici.password;
 }
 
 // Names only — never values. Consumed by config/validate.js.

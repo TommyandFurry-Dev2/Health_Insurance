@@ -16,7 +16,7 @@ import helmet from 'helmet';
 
 import config from './config/env.js';
 import {
-  createNivabupaRouter, createItgiRouter, createFgRouter, createNivabupaProbeRouter,
+  createNivabupaRouter, createItgiRouter, createFgRouter, createIciciRouter, createNivabupaProbeRouter,
 } from './index.js';
 
 export function createApp() {
@@ -84,6 +84,23 @@ export function createApp() {
   app.use(fgRouter);
   if (config.aliasPrefix) {
     app.use(config.aliasPrefix, fgRouter);
+  }
+
+  // ICICI Lombard, mounted the same way and under the same alias.
+  //
+  // The alias matters for the plainest of the reasons: the deployed frontend
+  // reaches this backend through /health (the Apache in front of the host
+  // proxies only that prefix), so https://<host>/health/icici-lombard/quote is
+  // the URL a deployed build calls. There is no ICICI payment callback to keep
+  // reachable — ICICI's hosted gateway returns the buyer to the SPA directly.
+  //
+  // Both mounts of the same router instance are safe for the same reason the
+  // others are: every route and every piece of middleware inside it is scoped
+  // to /icici-lombard.
+  const iciciRouter = createIciciRouter();
+  app.use(iciciRouter);
+  if (config.aliasPrefix) {
+    app.use(config.aliasPrefix, iciciRouter);
   }
 
   // GET /healthz, GET /readyz — outside the /nivabupa prefix so a load balancer

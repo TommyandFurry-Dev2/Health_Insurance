@@ -28,6 +28,8 @@ import config, {
   fgIsUnconfigured,
   fgCkycFlavour,
   partialFgGcKycVariables,
+  missingIciciVariables,
+  iciciIsUnconfigured,
 } from './env.js';
 
 // Without these, the named flow cannot work at all — there is no fallback and
@@ -188,7 +190,55 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   }
   console.log('');
 
+  // ── ICICI Lombard ──
+  //
+  // Reported the IFFCO Tokio / Future Generali way and for the same reason: no
+  // bundled fallbacks, so a value is either set or missing, and missing means
+  // the /icici-lombard endpoints answer 503 while everything else keeps working.
+  const iciciMissing = missingIciciVariables();
+  console.log('  ICICI Lombard (optional — every other insurer is unaffected either way)');
+  if (iciciIsUnconfigured()) {
+    console.log('    not configured — /icici-lombard endpoints answer 503');
+  } else {
+    console.log('    base URL           :', describeUrl(config.icici.baseUrl));
+    console.log('    EL_LOGIN           :', describeSecret(config.icici.login));
+    console.log('    EL_PASSWORD        :', describeSecret(config.icici.password));
+    console.log('    password sent      :', config.icici.passwordPreEncrypted ? 'pre-encrypted (EL_PASSWORD_PRE_ENCRYPTED)' : `encrypted here with ${config.icici.aesMode}`);
+    if (!config.icici.passwordPreEncrypted) {
+      console.log('    EL_AES_KEY         :', describeSecret(config.icici.aesKey));
+    }
+    console.log('    EL_CLIENT_NAME     :', describeSecret(config.icici.clientName));
+  }
+  console.log('');
+
   const fatal = [];
+
+  if (!iciciIsUnconfigured()) {
+    if (iciciMissing.length > 0) {
+      console.warn('  ⚠️  ICICI Lombard is PARTIALLY configured — missing:');
+      console.warn(`       ${iciciMissing.join(', ')}`);
+      console.warn('       The /icici-lombard endpoints will answer 503 until these are set.');
+      console.warn('');
+      // Not fatal in production, for the same reason a half-configured ITGI or
+      // FG is not: it must not stop a working deployment of the others booting.
+      if (strict) fatal.push(...iciciMissing);
+    }
+    if (!config.icici.clientName) {
+      console.warn('  ⚠️  EL_CLIENT_NAME is not set. Quote, CKYC, proposal and status work; the');
+      console.warn('       certificate-of-insurance path carries an empty {clientname} segment.');
+      console.warn('');
+    }
+    // The accident this whole report exists for: NODE_ENV says production, the
+    // host says UAT. ICICI's UAT host (…insurancearticlez.com) contains none of
+    // the words looksLikeUat() knows, so it is named explicitly.
+    const iciciUat = looksLikeUat(config.icici.baseUrl) || /insurancearticlez/i.test(config.icici.baseUrl || '');
+    if (isProduction && iciciUat) {
+      console.error('  ❌ NODE_ENV=production but EL_BASE_URL still points at ICICI Lombard UAT:');
+      console.error(`       ${describeUrl(config.icici.baseUrl)}`);
+      console.error('');
+      fatal.push('EL_BASE_URL');
+    }
+  }
 
   if (!fgIsUnconfigured()) {
     if (fgMissing.length > 0) {

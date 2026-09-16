@@ -11,6 +11,7 @@ import case_routes from './case.routes.js';
 import journey_routes from './journey.routes.js';
 import itgi_routes from './itgi.routes.js';
 import fg_routes from './fg.routes.js';
+import icici_routes from './icici.routes.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
@@ -51,6 +52,17 @@ export const ITGI_PATH_PREFIX = '/iffcotokio';
 // — it could only move this service's route away from it, which is precisely
 // the failure that loses a paid buyer's WS_P_ID and PGID.
 export const FG_PATH_PREFIX = '/future-generali';
+
+// Every ICICI Lombard route lives under this one prefix, and so does every piece
+// of its middleware — the same scoping property the three prefixes above have,
+// and for the same reason: it lets createIciciRouter() be mounted twice (at '/'
+// and at the compatibility alias) without its middleware running twice.
+//
+// A literal, not env-driven, like the others. Unlike ITGI and FG there is no
+// payment callback behind it that an insurer holds a copy of — ICICI's hosted
+// gateway returns the buyer to the SPA directly — so it is fixed only by the
+// route table (routes/icici.routes.js) and the SPA's api/elevate.js.
+export const ICICI_PATH_PREFIX = '/icici-lombard';
 
 // verify: captures the exact raw bytes on req.rawBody before the body is
 // decoded — kept from the original backend for diagnosing the NivaBupa
@@ -219,6 +231,52 @@ export function createFgRouter() {
   // app.js's own handlers instead of being answered here.
   router.use(FG_PATH_PREFIX, notFound);
   router.use(FG_PATH_PREFIX, errorHandler);
+
+  return router;
+}
+
+// The ICICI Lombard router — a sibling of the three above, built the same way
+// and scoped just as tightly to its own prefix. Kept separate for the same
+// reason they are separate from each other: the integrations must be able to
+// fail independently. Nothing here can affect a NivaBupa, IFFCO Tokio or Future
+// Generali request, and an ICICI deployment that was never configured simply
+// answers 503 on its own paths.
+//
+// Differences from the NivaBupa stack, each deliberate:
+//   * body limit — EL_JSON_BODY_LIMIT, 5mb by default: the working
+//     implementation parsed bodies up to 5mb, and the OVD upload needs more
+//     than express's 100kb default.
+//   * urlencoded — extended:false, matching the working implementation's
+//     parser. No ICICI route expects a form body today.
+//   * no rate limiting — same policy as every other insurer router.
+//   * its own CORS list — EL_CORS_ORIGINS, falling back to the shared one.
+export function createIciciRouter() {
+  const router = express.Router();
+
+  router.use(
+    ICICI_PATH_PREFIX,
+    cors(corsOptions(config.icici.corsOrigins)),
+    express.json({ limit: config.icici.jsonBodyLimit }),
+    express.urlencoded({ extended: false, limit: config.icici.jsonBodyLimit }),
+    logRequest,
+  );
+
+  // The same optional journey resolution the other routers use, reused rather
+  // than reimplemented. It hangs an optional journey on the request so ICICI
+  // calls can be audited against it, and it DELETES journeyId / resumeToken
+  // from the body so neither is forwarded into an ICICI payload — the premium,
+  // proposal and sync bodies go to ICICI verbatim.
+  //
+  // Its journey-API bypass keys on '/nivabupa/journey', which no ICICI path
+  // matches, so every ICICI request takes the normal branch.
+  router.use(ICICI_PATH_PREFIX, resolveJourney);
+
+  router.use(icici_routes);
+
+  // Path-scoped, so a request that is not for this router falls through to
+  // app.js's own handlers instead of being answered here.
+  router.use(ICICI_PATH_PREFIX, notFound);
+  router.use(ICICI_PATH_PREFIX, errorHandler);
 
   return router;
 }

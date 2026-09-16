@@ -20,6 +20,8 @@
     "smoke:journey": "node scripts/smoke-journey.js",
     "smoke:payment": "node scripts/smoke-payment.js",
     "smoke:fg": "node scripts/smoke-fg.js",
+    "smoke:icici": "node scripts/smoke-icici.js",
+    "test:icici": "node scripts/test-icici.js",
     "replay:decresp": "node scripts/replay-decresp.mjs"
   },
   "dependencies": {
