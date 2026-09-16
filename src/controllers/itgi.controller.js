@@ -279,7 +279,11 @@ export const initiatePayment = async (req, res) => {
 // place to assume the method will never change.
 export const handlePaymentReturn = async (req, res) => {
   const startedAt = Date.now();
-  const redirectBase = `${config.frontendUrl}${config.itgi.frontendReturnPath}`;
+  // config.itgi.frontendUrl is ITGI's own base and wins when set; the global
+  // frontendUrl is the fallback, so a deployment that sets neither behaves as
+  // it did before ITGI_FRONTEND_URL existed. See config/env.js for why ITGI
+  // needs a base of its own rather than moving the shared one.
+  const redirectBase = `${config.itgi.frontendUrl || config.frontendUrl}${config.itgi.frontendReturnPath}`;
 
   // Logged verbatim, before anything is read out of it.
   console.log('\n========== ITGI Payment Callback Received ==========');

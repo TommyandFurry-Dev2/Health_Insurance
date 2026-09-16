@@ -330,8 +330,31 @@ const config = {
     // lands on a 404 and the policy number is lost.
     returnUrl: requiredEnv('ITGI_PAYMENT_RETURN_URL') || null,
 
+    // Base the payment return handler prepends to frontendReturnPath.
+    //
+    // ITGI-only, and null unless ITGI_FRONTEND_URL is set — an unset value
+    // falls back to the global frontendUrl in the handler, so a deployment
+    // that does not set it behaves exactly as it did before this existed. That
+    // is the expected configuration: all three return pages now live in the
+    // same app under the same /health-insurance base, so FRONTEND_URL carries
+    // the value for NivaBupa, FG and ITGI alike.
+    //
+    // It exists as an escape hatch for the one case FRONTEND_URL cannot
+    // express — ITGI served by a different app, or from a different deploy
+    // path, than the other two. Without it the only way to move ITGI alone
+    // would be to move FRONTEND_URL, which silently relocates the other two
+    // insurers' return URLs; a payment callback is not the place for that kind
+    // of blast radius.
+    //
+    // When set, the value carries the '#' and the in-app base path, e.g.
+    // https://insurance.tommyandfurry.com/tommyandfurryuat/#/health-insurance
+    // The redirect is plain concatenation, so it goes out verbatim: no
+    // trailing slash, and the query string lands after the hash route, where
+    // the SPA's own router reads it.
+    frontendUrl: trimTrailingSlash(process.env.ITGI_FRONTEND_URL) || null,
+
     // SPA route the payment return handler 302s the buyer to, appended to
-    // FRONTEND_URL with the outcome as a query string.
+    // the base above (or FRONTEND_URL) with the outcome as a query string.
     frontendReturnPath: envOr('ITGI_FRONTEND_RETURN_PATH', IT.frontendReturnPath),
 
     // Falls back to the NivaBupa/global list so one origin allow-list covers

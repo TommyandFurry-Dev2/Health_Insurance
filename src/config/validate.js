@@ -157,7 +157,10 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
     console.log('    ITGI_PASSWORD      :', describeSecret(config.itgi.password));
     console.log('    ITGI_PARTNER_CODE  :', describeSecret(config.itgi.partnerCode));
     console.log('    payment redirect   :', config.itgi.returnUrl || '(ITGI_PAYMENT_RETURN_URL not set)');
-    console.log('    frontend redirect  :', `${config.frontendUrl}${config.itgi.frontendReturnPath}`);
+    // Resolved the same way the handler resolves it (ITGI's own base, else the
+    // global one) — this line is the only startup signal for the value, so it
+    // must not report a base the redirect will not actually use.
+    console.log('    frontend redirect  :', `${config.itgi.frontendUrl || config.frontendUrl}${config.itgi.frontendReturnPath}`);
   }
   console.log('');
 
