@@ -1,5 +1,6 @@
 import * as nivabupaApi from '../services/genericApi.service.js';
 import * as journeyService from '../services/journey.service.js';
+import * as nivabupaKyc from '../services/nivabupaKyc.service.js';
 import config from '../config/env.js';
 import {
   applyBusinessDefaults,
@@ -17,6 +18,13 @@ export const getUwDecision = async (req, res) => {
   const startedAt = Date.now();
   const journeyId = req.journeyId;
   const payload = req.body;
+
+  // KYC completion check: NivaBupa must have verified KYC for this application
+  // before it is underwritten. Nothing is sent upstream when it fails.
+  const kycCheck = await nivabupaKyc.checkKycForUnderwriting(req.headers, payload, { journeyId });
+  if (!kycCheck.ok) {
+    return res.status(kycCheck.httpStatus).json({ status: 'ERROR', code: 'KYC_NOT_VERIFIED', message: kycCheck.message });
+  }
 
   try {
     // Channel constants only, and no transaction lookup: underwriting runs
@@ -120,6 +128,14 @@ export const submitDataPush = async (req, res) => {
     });
     if (applied.length) {
       console.log('🔧 DATAPUSH — business defaults applied:', applied);
+    }
+    // PROPOSER.KYC values from NivaBupa's own completed KYC response replace what
+    // was typed into the proposal. Never blocks: payment has already been taken.
+    const verifiedKyc = await nivabupaKyc.applyVerifiedKycToDataPush(req.headers, req.body, { journeyId });
+    if (verifiedKyc.applied.length) {
+      console.log('🔧 DATAPUSH — verified KYC applied:', verifiedKyc.applied);
+    } else {
+      console.warn(`⚠️  DATAPUSH — verified KYC not applied: ${verifiedKyc.skipped || 'no verified values to map'}`);
     }
     // Printed immediately before the request goes upstream — the DATAPUSH API
     // trace in genericApi.service.js prints the full body right after this.

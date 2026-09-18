@@ -268,6 +268,23 @@ const config = {
       paymentCollectMode: envOr('NIVABUPA_PAYMENT_COLLECT_MODE', PROPOSAL_DEFAULTS.paymentCollectMode),
       paymentReceivedFlag: envOr('NIVABUPA_PAYMENT_RECEIVED_FLAG', PROPOSAL_DEFAULTS.paymentReceivedFlag),
     },
+
+    // KYC — NivaBupa's "KYC APIs Integration Document" (KYCNew CKYC OTP flow).
+    // A third auth mechanism, separate from both the generic OAuth token and the
+    // caseapi token: its own Username/Password, a PartnerName header, and every
+    // body wrapped in an AES-encrypted { payload } envelope.
+    //
+    // No bundled fallbacks. While any of the five credentials is unset,
+    // /nivabupa/kyc/* answer 503 naming what is missing and /nivabupa/uw-decision
+    // refuses proposals — underwriting requires KYC that NivaBupa has verified.
+    kyc: {
+      baseUrl: trimTrailingSlash(requiredEnv('NIVABUPA_KYC_BASE_URL')),
+      partnerName: requiredEnv('NIVABUPA_KYC_PARTNER_NAME'),
+      username: requiredEnv('NIVABUPA_KYC_USERNAME'),
+      password: requiredEnv('NIVABUPA_KYC_PASSWORD'),
+      encryptionKey: requiredEnv('NIVABUPA_KYC_ENCRYPTION_KEY'),
+      timeoutMs: numberEnvOr('NIVABUPA_KYC_TIMEOUT_MS', TIMEOUT_DEFAULTS.kyc),
+    },
   },
 
   // ── IFFCO Tokio (ITGI) — Partner Health ────────────────────────────────────

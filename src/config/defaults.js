@@ -323,6 +323,10 @@ export const TIMEOUT_DEFAULTS = {
   // this server is what gives up first and can report why, rather than the
   // browser cutting a live request and leaving no server-side record.
   dataPush: 55000,
+  // NivaBupa KYC. The CKYC OTP calls go through to the CKYC registry, and
+  // NivaBupa's own Postman samples show EKYCOTPDetailEnc at 58s and
+  // EKYCDetailEnc at 63s. Cutting those short would waste an OTP.
+  kyc: 120000,
 
   // ── IFFCO Tokio ──
   // Premium and proposal answer in ~1s on staging, but the same host has been

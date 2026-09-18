@@ -8,6 +8,7 @@ import quote_routes from './quote.routes.js';
 import proposal_routes from './proposal.routes.js';
 import payment_routes from './payment.routes.js';
 import case_routes from './case.routes.js';
+import kyc_routes from './nivabupaKyc.routes.js';
 import journey_routes from './journey.routes.js';
 import itgi_routes from './itgi.routes.js';
 import fg_routes from './fg.routes.js';
@@ -125,6 +126,7 @@ export function createNivabupaRouter() {
   router.use(proposal_routes);  // POST /nivabupa/uw-decision, /nivabupa/datapush
   router.use(payment_routes);   // POST /nivabupa/payment/initiate, /nivabupa/payment/return
   router.use(case_routes);      // POST /nivabupa/proposal-status, /nivabupa/policy-download
+  router.use(kyc_routes);       // POST /nivabupa/kyc/otp/send, /verify, /resend
 
   // Path-scoped, so a request that is not for this router falls through to
   // app.js's own handlers instead of being answered here.

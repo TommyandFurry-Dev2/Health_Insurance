@@ -27,6 +27,7 @@ import config, {
 } from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
+import { missingKycVariables } from './services/nivabupaKyc.service.js';
 import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helper.js';
 
 export {
@@ -70,6 +71,9 @@ export async function startNivabupa() {
   console.log('  CALLBACK : POST /nivabupa/payment/return');
   console.log('  CASE API : POST /nivabupa/proposal-status');
   console.log('  CASE API : POST /nivabupa/policy-download');
+  console.log('  KYC      : POST /nivabupa/kyc/otp/send');
+  console.log('  KYC      : POST /nivabupa/kyc/otp/verify');
+  console.log('  KYC      : POST /nivabupa/kyc/otp/resend');
   console.log('  LIVENESS : GET  /healthz');
   console.log('  READY    : GET  /readyz        (includes MySQL check)');
   console.log('');
@@ -91,6 +95,13 @@ export async function startNivabupa() {
   }
   console.log(`  Payment returnPath → ${config.nivabupa.payment.returnUrl}`);
   console.log(`  Frontend redirect  → ${config.frontendUrl}${config.frontendReturnPath}`);
+  const kycMissing = missingKycVariables();
+  if (kycMissing.length) {
+    console.warn(`  ⚠️  NivaBupa KYC not configured — missing ${kycMissing.join(', ')}.`);
+    console.warn('     /nivabupa/kyc/* answer 503 and /nivabupa/uw-decision refuses proposals until set.');
+  } else {
+    console.log(`  KYC API            → ${config.nivabupa.kyc.baseUrl}`);
+  }
 
   reportItgi(alias);
   reportFg(alias);
