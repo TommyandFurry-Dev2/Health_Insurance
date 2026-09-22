@@ -374,6 +374,9 @@ export const APP_DEFAULTS = {
   prodFrontendUrl: 'https://insurance.tommyandfurry.com',
   // Where handlePaymentReturn 302s the buyer after decrypting the callback.
   frontendReturnPath: '/nivabupa-return',
+  // Where NivaBupa's HOSTED KYC page sends the buyer when they finish — a page
+  // of the SPA, not a route of ours. Sent as CallBack_URL on RedirectionLinkEnc.
+  frontendKycReturnPath: '/nivabupa-kyc-return',
   // The public URL registered with NivaBupa as `returnPath`.
   prodPaymentReturnUrl: 'https://ondc.healthinsurance.tommyandfurry.com/health/nivabupa/payment/return',
   // Every NivaBupa route lives under this prefix.

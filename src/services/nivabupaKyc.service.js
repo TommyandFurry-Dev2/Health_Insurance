@@ -6,13 +6,27 @@ import { encryptKycPayload, decryptKycPayload } from '../helpers/nivabupaKycCryp
 import * as kycRepo from '../repositories/nivabupaKyc.repository.js';
 import * as logRepo from '../repositories/log.repository.js';
 
-// NivaBupa KYC — the CKYC OTP flow from NivaBupa's "KYC APIs Integration
-// Document" (kyc):
+// NivaBupa KYC — the two flows from NivaBupa's "KYC APIs Integration Document"
+// (kyc), both authenticated the same way (PartnerName header + GenerateTokenEnc)
+// and both ending in one VERIFIED row of nivabupa_kyc_requests:
 //
-//   GenerateTokenEnc → access_token      (PartnerName header, Username/Password)
+//   GenerateTokenEnc     → access_token
+//
+//   ── hosted (the one the SPA uses) ──
+//   RedirectionLinkEnc   → a link to NivaBupa's OWN KYC page for this buyer
+//   GetKycStatusEnc      → what that page ended in, polled afterwards
+//
+//   ── OTP, in this service (kept as the fallback) ──
 //   EKYCOTPDetailEnc → OTP to the mobile registered on the PAN's CKYC record
 //   EKYCDetailEnc    → the CKYC record, once NivaBupa has verified the OTP
 //   ReSendOTPEnc     → the same OTP request again
+//
+// WHY the hosted page is preferred: NivaBupa's page runs whatever verification
+// that customer can actually pass — CKYC, digital Aadhaar, OVD upload, PAN +
+// Form 60 — while EKYCOTPDetailEnc can only do one: an OTP to the mobile
+// registered against the PAN in the CKYC registry. A buyer whose CKYC record
+// holds an old number, or who has no CKYC record at all, cannot finish the OTP
+// flow at all, and that is a large share of first-time buyers.
 //
 // Every request and response body is { payload: <AES-encrypted JSON> } — see
 // helpers/nivabupaKycCrypto.helper.js.
@@ -189,15 +203,153 @@ function kycMessage(response) {
   return text(response?.CKYCSuccessDescription) || text(response?.Remarks) || text(response?.message) || null;
 }
 
+// ── Hosted KYC: NivaBupa's own KYC page ─────────────────────────────────────
+
+// Sent as PartnerRequestId. NivaBupa key the KYC record on it, and answer a
+// repeat with "Duplicate Request" AND the same link — so one id per attempt,
+// reused deliberately, is what makes a second "Verify KYC" click return the
+// buyer to the page they were already on instead of opening a second record.
+function newPartnerRequestId() {
+  return `TF${Date.now()}${crypto.randomInt(10, 100)}`;
+}
+
+// NivaBupa want dd/mm/yyyy. The SPA sends what <input type="date"> produces
+// (yyyy-mm-dd); a value already in their format passes through unchanged.
+function toKycDate(value) {
+  const raw = text(value);
+  if (!raw) return '';
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  const dmy = /^(\d{2})[/-](\d{2})[/-](\d{4})$/.exec(raw);
+  if (dmy) return `${dmy[1]}/${dmy[2]}/${dmy[3]}`;
+  return raw;
+}
+
+// 'M' / 'male' / 'MALE' all reach NivaBupa as 'Male'. Anything else is passed
+// through rather than guessed at.
+function toKycGender(value) {
+  const raw = text(value).toLowerCase();
+  if (raw === 'm' || raw === 'male') return 'Male';
+  if (raw === 'f' || raw === 'female') return 'Female';
+  if (raw === 'o' || raw === 'other' || raw === 'transgender') return 'Other';
+  return text(value);
+}
+
+// One name field split the way NivaBupa's payload wants it. A single-word name
+// becomes the first name with no last name — their page asks for the rest.
+function splitName(input) {
+  const first = text(input.firstName);
+  const last = text(input.lastName);
+  if (first || last) return { firstName: first, lastName: last };
+  const parts = text(input.fullName).split(/\s+/).filter(Boolean);
+  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') };
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The fields NivaBupa reject the request without. Verified against UAT rather
+// than read off the document: RedirectionLinkEnc answers statusCode 400 with
+// "<field> field is Mandatory" one field at a time, and address, pincode, state
+// and salutation are NOT among them (their page collects the address itself).
+function validateRedirectRequest(input = {}) {
+  const errors = [];
+  const { firstName, lastName } = splitName(input);
+  if (!firstName) errors.push('A name is required.');
+  if (!lastName) errors.push('A last name is required — Niva Bupa need the full name for KYC.');
+  if (!PAN_PATTERN.test(text(input.pan).toUpperCase())) errors.push('A valid PAN is required.');
+  if (!MOBILE_PATTERN.test(text(input.mobile))) errors.push('A valid 10-digit mobile number is required.');
+  if (!EMAIL_PATTERN.test(text(input.email))) errors.push('A valid email address is required.');
+  if (!toKycDate(input.dob)) errors.push('Date of birth is required.');
+  if (!toKycGender(input.gender)) errors.push('Gender is required.');
+  if (text(input.applicationNo) && !APPLICATION_NO_PATTERN.test(text(input.applicationNo))) {
+    errors.push('applicationNo is not valid.');
+  }
+  return errors;
+}
+
+// The address fields go out only when the SPA has them: NivaBupa's page shows
+// whatever is prefilled, and a half-filled address there is worse than none.
+function buildRedirectBody(input, { applicationNo, partnerRequestId, callbackUrl }) {
+  const { firstName, lastName } = splitName(input);
+  const gender = toKycGender(input.gender);
+  const body = {
+    ApplicationNo: applicationNo,
+    PolicyNo: '',
+    Salutation: gender === 'Female' ? 'Ms' : gender === 'Male' ? 'Mr' : '',
+    firstName,
+    lastName,
+    PartnerRequestId: partnerRequestId,
+    KYCType: text(input.kycType) || 'CKYC',
+    proposerDOB: toKycDate(input.dob),
+    proposerGender: gender,
+    proposerEmailID: text(input.email),
+    proposerMobileNumber: text(input.mobile),
+    Pan: text(input.pan).toUpperCase(),
+  };
+  if (text(input.address)) body.addressLine1 = text(input.address);
+  if (text(input.city)) body.city = text(input.city);
+  if (text(input.pincode)) body.proposerPinCode = text(input.pincode);
+  if (text(input.state)) body.stateName = text(input.state);
+  if (text(input.country)) body.COUNTRY = text(input.country);
+  // Where NivaBupa's page sends the buyer once they are done. Optional to them
+  // — a request without it still issues a link, it just ends on their own page.
+  if (callbackUrl) body.CallBack_URL = callbackUrl;
+  return body;
+}
+
+function createRedirectionLink(body, context) {
+  return callKyc('RedirectionLinkEnc', 'KYC_REDIRECT_LINK', body, context);
+}
+
+// Issued means a usable link came back. "Duplicate Request" satisfies this on
+// purpose: it carries the link already issued for that PartnerRequestId.
+function isRedirectIssued(response) {
+  return text(response?.statusCode) === '200' && !isBlank(response?.RedirectUrl);
+}
+
+function redirectMessage(response) {
+  return text(response?.message) || text(response?.Message) || null;
+}
+
+function fetchKycStatus({ applicationNo, partnerRequestId }, context) {
+  return callKyc('GetKycStatusEnc', 'KYC_STATUS', {
+    ApplicationNo: text(applicationNo),
+    PartnerRequestId: text(partnerRequestId),
+  }, context);
+}
+
+// Complete is NivaBupa's own verdict on their own page: IsKycComplete = True.
+// The CKYCID check is the same one the OTP flow makes — a KYC "complete" with
+// no registry identifier is not something to hand underwriting.
+function isHostedKycComplete(response) {
+  return text(response?.IsKycComplete).toLowerCase() === 'true' && !isBlank(response?.CKYCID);
+}
+
+// Their status call answers StatusCode 201 with "Kyc Not Completed" while the
+// buyer is still on the page, and 201 "Unable to get Application detail." when
+// the ApplicationNo/PartnerRequestId pair matches no record at all.
+function hostedStatusMessage(response) {
+  return text(response?.CKYCRejectionDescription)
+    || text(response?.Message)
+    || text(response?.Remarks)
+    || null;
+}
+
+function hostedKycStatus(response) {
+  return text(response?.CKYCStatus) || text(response?.StatusCode) || null;
+}
+
 function maskTail(value, visible = 4) {
   const raw = text(value);
   if (!raw) return null;
   return raw.length <= visible ? raw : `${'X'.repeat(raw.length - visible)}${raw.slice(-visible)}`;
 }
 
-// Photo can be a large base64 image the proposal never needs.
+// Photo is a large base64 image the proposal never needs, and the hosted
+// status call's GetEKYCDocumentRespons carries the uploaded document scans —
+// both are dropped before the response is written to verified_response.
 function storableResponse(response) {
-  const { Photo, ...rest } = response || {};
+  const { Photo, GetEKYCDocumentRespons, ...rest } = response || {};
   return rest;
 }
 
@@ -278,8 +430,10 @@ function applyVerifiedKycFields(payload, row) {
     proposer.KYC[field] = String(value).trim();
     applied.push(field);
   };
+  // PAN from the OTP flow's response, Pan from the hosted flow's — whichever
+  // this row was verified through.
   write('CKYC_NUMBER', response.CKYCID || row.ckyc_number);
-  write('PAN_NUMBER', text(response.PAN).toUpperCase() || row.pan);
+  write('PAN_NUMBER', text(response.PAN || response.Pan).toUpperCase() || row.pan);
   return applied;
 }
 
@@ -303,6 +457,16 @@ export {
   missingKycVariables,
   newKycReferenceId,
   newApplicationNo,
+  newPartnerRequestId,
+  validateRedirectRequest,
+  buildRedirectBody,
+  createRedirectionLink,
+  isRedirectIssued,
+  redirectMessage,
+  fetchKycStatus,
+  isHostedKycComplete,
+  hostedStatusMessage,
+  hostedKycStatus,
   validateOtpRequest,
   isValidOtp,
   sendKycOtp,

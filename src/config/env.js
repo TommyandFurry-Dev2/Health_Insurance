@@ -14,6 +14,12 @@
 // a real deployment that injects config through the process environment
 // (systemd, pm2 ecosystem file, Docker, Kubernetes) is unaffected by the
 // presence or absence of a .env file.
+//
+// .env.local is read first, so its values win over .env's (first value seen is
+// kept). It holds a developer's localhost overrides — FRONTEND_URL, the FG
+// ResponseURL — so .env can stay identical to the deployed one and never carry
+// a localhost value onto a server. Missing, it is silently skipped; a server
+// never has one. Gitignored.
 // ─────────────────────────────────────────────────────────────────────────────
 import dotenv from 'dotenv';
 
@@ -30,7 +36,7 @@ import {
   JOURNEY_DEFAULTS,
 } from './defaults.js';
 
-dotenv.config();
+dotenv.config({ path: ['.env.local', '.env'] });
 
 // Records which keys fell back to defaults.js instead of coming from the
 // environment, so config/validate.js can report them at boot without this file
@@ -124,6 +130,11 @@ function trimTrailingSlash(value) {
 const isDevelopment = process.env.NODE_ENV === 'development';
 const localPort = numberEnvOr('PORT', APP_DEFAULTS.port);
 
+// Read once here rather than off `config` below, because two entries of the
+// literal need it and one of them (the KYC callback) is built from it.
+const frontendUrl = process.env.FRONTEND_URL
+  || (isDevelopment ? APP_DEFAULTS.devFrontendUrl : APP_DEFAULTS.prodFrontendUrl);
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   isDevelopment,
@@ -136,8 +147,7 @@ const config = {
   // lands on the Vite dev server instead of the deployed site. A deployed
   // instance without FRONTEND_URL set must not send real buyers to a localhost
   // page on their own machine, which is why the default is environment-aware.
-  frontendUrl: process.env.FRONTEND_URL
-    || (isDevelopment ? APP_DEFAULTS.devFrontendUrl : APP_DEFAULTS.prodFrontendUrl),
+  frontendUrl,
 
   // Path on the frontend the payment callback redirects to, appended to
   // frontendUrl with the payment outcome as a query string.
@@ -284,6 +294,21 @@ const config = {
       password: requiredEnv('NIVABUPA_KYC_PASSWORD'),
       encryptionKey: requiredEnv('NIVABUPA_KYC_ENCRYPTION_KEY'),
       timeoutMs: numberEnvOr('NIVABUPA_KYC_TIMEOUT_MS', TIMEOUT_DEFAULTS.kyc),
+
+      // CallBack_URL on RedirectionLinkEnc — where NivaBupa's hosted KYC page
+      // sends the buyer once they are done. Unlike the payment return this is
+      // not a route of ours: it is a page of the SPA, and nothing is read from
+      // whatever NivaBupa append to it. The result is always fetched from
+      // GetKycStatusEnc, because a buyer who closes the tab never lands here at
+      // all and the KYC is still complete.
+      //
+      // Defaults to the SPA's KYC return page under FRONTEND_URL, so a local
+      // run lands on the dev server and a deployment on the deployed site.
+      // Optional to NivaBupa — unset, their page simply ends on itself.
+      callbackUrl: envOr(
+        'NIVABUPA_KYC_CALLBACK_URL',
+        `${trimTrailingSlash(frontendUrl)}${APP_DEFAULTS.frontendKycReturnPath}`
+      ),
     },
   },
 

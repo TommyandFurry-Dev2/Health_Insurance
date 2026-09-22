@@ -126,7 +126,7 @@ export function createNivabupaRouter() {
   router.use(proposal_routes);  // POST /nivabupa/uw-decision, /nivabupa/datapush
   router.use(payment_routes);   // POST /nivabupa/payment/initiate, /nivabupa/payment/return
   router.use(case_routes);      // POST /nivabupa/proposal-status, /nivabupa/policy-download
-  router.use(kyc_routes);       // POST /nivabupa/kyc/otp/send, /verify, /resend
+  router.use(kyc_routes);       // POST /nivabupa/kyc/redirect, /status, /otp/send, /verify, /resend
 
   // Path-scoped, so a request that is not for this router falls through to
   // app.js's own handlers instead of being answered here.

@@ -24,6 +24,7 @@
     "test:icici": "node scripts/test-icici.js",
     "test:nivabupa-kyc": "node scripts/test-nivabupa-kyc.js",
     "smoke:nivabupa-kyc": "node scripts/smoke-nivabupa-kyc.js",
+    "smoke:nivabupa-kyc-redirect": "node scripts/smoke-nivabupa-kyc-redirect.js",
     "replay:decresp": "node scripts/replay-decresp.mjs"
   },
   "dependencies": {

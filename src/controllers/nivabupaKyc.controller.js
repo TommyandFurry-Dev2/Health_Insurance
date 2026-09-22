@@ -1,3 +1,4 @@
+import config from '../config/env.js';
 import db from '../db/index.js';
 import * as kycService from '../services/nivabupaKyc.service.js';
 import * as kycRepo from '../repositories/nivabupaKyc.repository.js';
@@ -40,11 +41,182 @@ async function loadAttempt(req, res) {
     return null;
   }
   if (!row) {
-    res.status(404).json({ status: 'ERROR', message: 'No KYC request found for this reference — send the OTP again.' });
+    res.status(404).json({ status: 'ERROR', message: 'No KYC request found for this reference — start KYC again.' });
     return null;
   }
   return row;
 }
+
+// POST /nivabupa/kyc/redirect
+//
+// Body: { fullName* (or firstName*/lastName*), dob*, gender*, email*, mobile*,
+//         pan*, address?, city?, state?, pincode?, applicationNo?, kycType? }
+//
+// Asks NivaBupa (RedirectionLinkEnc) for a link to THEIR OWN KYC page for this
+// buyer, and answers it to the SPA, which sends the buyer there. Nothing is
+// verified at this point: the outcome is read back from GetKycStatusEnc by
+// POST /nivabupa/kyc/status, because a buyer who finishes and closes the tab
+// never returns to CallBack_URL and their KYC is complete all the same.
+//
+// applicationNo is reused when supplied, so a buyer who starts KYC again keeps
+// the application number the proposal will carry.
+export const startRedirect = async (req, res) => {
+  if (notConfigured(res)) return undefined;
+
+  const input = req.body || {};
+  const errors = kycService.validateRedirectRequest(input);
+  if (errors.length) {
+    return res.status(400).json({ status: 'ERROR', message: errors.join(' '), errors });
+  }
+
+  const kycReferenceId = kycService.newKycReferenceId();
+  const partnerRequestId = kycService.newPartnerRequestId();
+  const applicationNo = String(input.applicationNo || '').trim() || kycService.newApplicationNo();
+  const pan = String(input.pan).trim().toUpperCase();
+  const mobile = String(input.mobile).trim();
+  const context = { journeyId: req.journeyId, correlationId: kycReferenceId };
+
+  try {
+    await kycRepo.createRedirectPending({ kycReferenceId, applicationNo, journeyId: req.journeyId, pan, mobile, partnerRequestId });
+  } catch (error) {
+    return databaseError(res, error);
+  }
+
+  const body = kycService.buildRedirectBody(input, {
+    applicationNo,
+    partnerRequestId,
+    callbackUrl: config.nivabupa.kyc.callbackUrl,
+  });
+
+  let response;
+  try {
+    response = await kycService.createRedirectionLink(body, context);
+  } catch (error) {
+    await kycRepo.markFailed(kycReferenceId, { message: error.message }).catch(() => {});
+    return upstreamError(res, error, 'NivaBupa KYC link request failed');
+  }
+
+  const message = kycService.redirectMessage(response);
+  if (!kycService.isRedirectIssued(response)) {
+    await kycRepo.markFailed(kycReferenceId, { message }).catch(() => {});
+    // 422, not 502: NivaBupa answered, and the answer is about this buyer's
+    // details ("Proposer EmailId field is Mandatory" and friends).
+    return res.status(422).json({
+      status: 'ERROR',
+      message: message || 'Niva Bupa could not open a KYC page for these details.',
+    });
+  }
+
+  try {
+    await kycRepo.markLinkIssued(kycReferenceId, {
+      nbhiReferenceNo: response.NBHIReferenceNo,
+      redirectUrl: response.RedirectUrl,
+      message,
+    });
+  } catch (error) {
+    return databaseError(res, error);
+  }
+
+  if (req.journeyId) {
+    await journeyService.saveKycStatus(req.journeyId, {
+      status: KYC_STATUS.PENDING,
+      method: 'CKYC',
+      referenceId: kycReferenceId,
+      panNumber: pan,
+    }, req.journeyContext);
+  }
+
+  return res.status(200).json({
+    status: 'SUCCESS',
+    kyc: {
+      referenceId: kycReferenceId,
+      applicationNo,
+      redirectUrl: response.RedirectUrl,
+      verified: false,
+      message,
+    },
+  });
+};
+
+// POST /nivabupa/kyc/status
+//
+// Body: { referenceId* }
+//
+// Asks NivaBupa (GetKycStatusEnc) what their hosted page ended in. Polled by
+// the SPA while the buyer is on that page, and again when they come back.
+//
+// Safe to call any number of times: a row already VERIFIED answers from what
+// was stored instead of calling NivaBupa again, and an unfinished one is left
+// exactly as it was.
+export const checkStatus = async (req, res) => {
+  if (notConfigured(res)) return undefined;
+
+  const row = await loadAttempt(req, res);
+  if (!row) return undefined;
+
+  if (row.status === 'VERIFIED') {
+    const response = db.fromJson(row.verified_response);
+    return res.status(200).json({ status: 'SUCCESS', kyc: kycService.summarize(row, { verified: true, response }) });
+  }
+  if (!row.partner_request_id) {
+    return res.status(409).json({
+      status: 'ERROR',
+      message: 'This KYC request was not started on Niva Bupa\'s KYC page — verify the OTP instead.',
+    });
+  }
+
+  let response;
+  try {
+    response = await kycService.fetchKycStatus(
+      { applicationNo: row.application_no, partnerRequestId: row.partner_request_id },
+      { journeyId: req.journeyId, correlationId: row.kyc_reference_id }
+    );
+  } catch (error) {
+    return upstreamError(res, error, 'NivaBupa KYC status check failed');
+  }
+
+  const verified = kycService.isHostedKycComplete(response);
+  const message = kycService.hostedStatusMessage(response) || (verified ? 'KYC verified' : 'KYC is not complete yet.');
+
+  let saved = row;
+  try {
+    if (verified) {
+      saved = await kycRepo.markVerified(row.kyc_reference_id, {
+        ckycNumber: response.CKYCID,
+        ckycStatus: kycService.hostedKycStatus(response),
+        message,
+        response: kycService.storableResponse(response),
+      });
+    } else {
+      // No attempt counted: polling a page the buyer is still on is not a
+      // failed verification.
+      await kycRepo.saveMessage(row.kyc_reference_id, { ckycStatus: kycService.hostedKycStatus(response), message });
+    }
+  } catch (error) {
+    // Verified but not recorded would leave underwriting unable to find it.
+    return databaseError(res, error);
+  }
+
+  if (req.journeyId && verified) {
+    await journeyService.saveKycStatus(req.journeyId, {
+      status: KYC_STATUS.VERIFIED,
+      method: 'CKYC',
+      referenceId: row.kyc_reference_id,
+      ckycNumber: response.CKYCID,
+      panNumber: row.pan,
+    }, req.journeyContext);
+  }
+
+  return res.status(200).json({
+    status: 'SUCCESS',
+    kyc: {
+      ...kycService.summarize(saved, { verified, message, response }),
+      // The link stays usable for 72 hours, so a buyer who abandoned the page
+      // can be sent back to the same one rather than starting a second record.
+      redirectUrl: verified ? null : row.redirect_url || null,
+    },
+  });
+};
 
 // POST /nivabupa/kyc/otp/send
 //
