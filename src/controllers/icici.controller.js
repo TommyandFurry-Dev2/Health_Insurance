@@ -344,8 +344,10 @@ export const ckyc = async (req, res) => {
 
 // POST /icici-lombard/ckyc/ovd
 //
-// The document-upload fallback when CKYC does not resolve. Not wired into the
-// current health UI. The audit row records the proof TYPES, never the files.
+// ICICI's document-upload fallback when CKYC does not resolve; the SPA offers
+// it after a declined CKYC. Like CKYC, documents ICICI decline are an OUTCOME
+// (200, isKycSuccess false, their ErrorMessage), recorded as FAILED so it is
+// findable. The audit row records the proof TYPES, never the files.
 export const ovdInitiate = async (req, res) => {
   const startedAt = Date.now();
   const body = req.body ?? {};
@@ -357,6 +359,7 @@ export const ovdInitiate = async (req, res) => {
 
   try {
     const { result, exchange } = await iciciCkyc.ovdInitiate(body);
+    const d = result.data;
 
     await audit({
       req,
@@ -365,7 +368,12 @@ export const ovdInitiate = async (req, res) => {
       httpStatus: exchange?.responseStatus,
       endpointUrl: exchange?.url || safeEndpoint('ovdInitiate'),
       requestPayload: described,
-      responsePayload: { isKycSuccess: result.data.isKycSuccess, errorCode: result.meta.errorCode ?? null },
+      responsePayload: {
+        isKycSuccess: d.isKycSuccess,
+        errorCode: result.meta.errorCode ?? null,
+        errorMessage: d.errorMessage ?? null,
+      },
+      errorMessage: d.isKycSuccess ? null : `ICICI OVD not verified: ${d.errorMessage || 'no reason given'}`,
       correlationId: body.quoteTransactionId,
     });
 

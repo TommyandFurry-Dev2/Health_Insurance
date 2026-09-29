@@ -245,9 +245,9 @@ export function createFgRouter() {
 // answers 503 on its own paths.
 //
 // Differences from the NivaBupa stack, each deliberate:
-//   * body limit — EL_JSON_BODY_LIMIT, 5mb by default: the working
-//     implementation parsed bodies up to 5mb, and the OVD upload needs more
-//     than express's 100kb default.
+//   * body limit — EL_JSON_BODY_LIMIT, 6mb by default: the OVD upload carries
+//     two base64-encoded proofs of up to 2 MB each, far past express's 100kb
+//     default.
 //   * urlencoded — extended:false, matching the working implementation's
 //     parser. No ICICI route expects a form body today.
 //   * no rate limiting — same policy as every other insurer router.

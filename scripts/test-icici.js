@@ -674,6 +674,64 @@ await test('OVD happy path sends multipart with the documented field names', asy
   eq([res.json.operation, res.json.data.isKycSuccess, res.json.data.customerName], ['ovdInitiate', true, 'SAM'], 'data');
 });
 
+await test('ckyc with Aadhaar sends Gender as the kit\'s M/F even when given the word', async () => {
+  mockToken();
+  on('POST', '/generic/common/ckyc/generic/health/ckyc', () => ({
+    json: { Success: true, isKycSuccess: true, StatusCode: 0, CorelationId: 'cid-g' },
+  }));
+  const res = await call('POST', `${BASE}/ckyc`, {
+    transactionId: BNC, dateOfBirth: '29-Oct-2001', aadhaarNumber: '987654398765', nameAsPerAadhaar: 'abv dth', gender: 'Female',
+  });
+  eq(res.status, 200, 'HTTP status');
+  const [upstream] = hits('POST', '/generic/common/ckyc/generic/health/ckyc');
+  eq(upstream.json.Gender, 'F', 'upstream Gender');
+});
+
+await test('ckyc with Aadhaar and an unmappable gender → 400', async () => {
+  const res = await call('POST', `${BASE}/ckyc`, {
+    transactionId: 't', dateOfBirth: '29-Oct-2001', aadhaarNumber: '123412341234', nameAsPerAadhaar: 'x', gender: 'Other',
+  });
+  eq([res.status, res.json.error.details], [400, { field: 'gender' }], 'status/details');
+});
+
+await test('OVD accepts base64 proofs from the SPA and uploads the decoded bytes', async () => {
+  mockToken();
+  on('POST', '/generic/common/ckyc/generic/health/ovdinitiate', () => ({ json: { isKycSuccess: true, Success: true, CustomerName: 'SAM' } }));
+  const res = await call('POST', `${BASE}/ckyc/ovd`, {
+    quoteTransactionId: BNC, proofOfIdentityType: 'PAN', proofOfAddressType: 'PASSPORT',
+    proofOfIdentity: { base64: Buffer.from('%PDF-identity').toString('base64'), filename: 'pan.pdf', contentType: 'application/pdf' },
+    proofOfAddress: { base64: Buffer.from('JPEG-address').toString('base64'), filename: 'passport.jpg', contentType: 'image/jpeg' },
+  });
+  eq(res.status, 200, 'HTTP status');
+  const [upstream] = hits('POST', '/generic/common/ckyc/generic/health/ovdinitiate');
+  const text = upstream.raw.toString('utf8');
+  assert(text.includes('%PDF-identity') && text.includes('JPEG-address'), 'decoded file bytes missing from multipart');
+  assert(text.includes('filename="pan.pdf"') && text.includes('Content-Type: image/jpeg'), 'part filename/content-type missing');
+  eq(res.json.data.isKycSuccess, true, 'isKycSuccess');
+});
+
+await test('OVD without a proof file → 400 naming it', async () => {
+  const res = await call('POST', `${BASE}/ckyc/ovd`, {
+    quoteTransactionId: BNC, proofOfIdentityType: 'PAN', proofOfAddressType: 'AADHAAR',
+    proofOfIdentity: { base64: Buffer.from('x').toString('base64'), filename: 'pan.pdf' },
+  });
+  eq([res.status, res.json.error.details], [400, { field: 'proofOfAddress' }], 'status/details');
+});
+
+await test('OVD documents ICICI decline (Success:false) are a 200 outcome carrying their wording', async () => {
+  mockToken();
+  on('POST', '/generic/common/ckyc/generic/health/ovdinitiate', () => ({
+    json: { isKycSuccess: false, Success: false, ErrorMessage: 'Document not clear', ErrorCode: 1 },
+  }));
+  const res = await call('POST', `${BASE}/ckyc/ovd`, {
+    quoteTransactionId: BNC, proofOfIdentityType: 'PAN', proofOfAddressType: 'AADHAAR',
+    proofOfIdentity: { base64: Buffer.from('a').toString('base64'), filename: 'pan.pdf' },
+    proofOfAddress: { base64: Buffer.from('b').toString('base64'), filename: 'aadhaar.pdf' },
+  });
+  eq(res.status, 200, 'HTTP status');
+  eq([res.json.data.isKycSuccess, res.json.data.errorMessage], [false, 'Document not clear'], 'data');
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 heading('G. Routing, configuration, isolation');
 

@@ -1,16 +1,30 @@
 import { callIcici } from './iciciApi.service.js';
-import { requireFields, validationError } from '../helpers/icici.helper.js';
+import { requireFields, validationError, isEmpty } from '../helpers/icici.helper.js';
 import { ICICI_PROVIDER, OVD_IDENTITY_PROOF_TYPES, OVD_ADDRESS_PROOF_TYPES } from '../constants/icici.constants.js';
 
+// CKYC kit: "Gender- M, F (Gender is mandatory in case of AadhaarNumber is
+// passed)". The premium and proposal APIs take the WORD ("Male"/"Female"), so a
+// caller holding the proposal's value is mapped here rather than having ICICI
+// decline an Aadhaar CKYC over the spelling.
+const CKYC_GENDER = { M: 'M', F: 'F', MALE: 'M', FEMALE: 'F' };
+
+function ckycGender(value) {
+  if (isEmpty(value)) return null;
+  return CKYC_GENDER[String(value).trim().toUpperCase()] ?? null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ICICI Lombard CKYC + OVD (from CKYC_API_Kit_V2) — the working implementation's
-// ElevateCkycService, unchanged in behaviour.
+// ICICI Lombard CKYC + OVD (from CKYC_API_Kit_V2) — ported from the working
+// implementation's ElevateCkycService, with three kit-driven changes: Gender is
+// sent as the kit's M/F, OVD proofs may arrive as base64 JSON from the SPA, and
+// declined OVD documents are an outcome rather than a 502.
 //
 //   CKYC : POST {EL_CKYC_PATH}
 //          one of PanNumber | CkycNumber | AadhaarNumber (+NameAsPerAadhaar,
-//          Gender when Aadhaar). DateOfBirth is dd-MMM-yyyy.
+//          Gender M/F when Aadhaar). DateOfBirth is dd-MMM-yyyy.
 //   OVD  : POST {EL_OVD_INITIATE_PATH}
-//          multipart upload of identity + address proofs.
+//          multipart upload of identity + address proofs — ICICI's fallback
+//          when CKYC cannot resolve the customer.
 //
 // ⚠️ CKYC IS A HARD GATE on ICICI's side: proposal-payment answers
 // `458 KYC PENDING` until a CKYC has resolved against the quote's
@@ -38,6 +52,12 @@ async function ckyc(input) {
       field: 'nameAsPerAadhaar|gender',
     });
   }
+  const gender = ckycGender(input.gender);
+  if (input.aadhaarNumber && !gender) {
+    throw validationError('gender must be M or F (Male/Female also accepted) when aadhaarNumber is passed', {
+      field: 'gender',
+    });
+  }
   const body = {
     TransactionId: input.transactionId,
     DateOfBirth: input.dateOfBirth,
@@ -45,7 +65,7 @@ async function ckyc(input) {
     CkycNumber: input.ckycNumber ?? null,
     AadhaarNumber: input.aadhaarNumber ?? null,
     NameAsPerAadhaar: input.nameAsPerAadhaar ?? null,
-    Gender: input.gender ?? null,
+    Gender: gender,
   };
 
   let res;
@@ -119,9 +139,31 @@ async function ckyc(input) {
 }
 
 /**
- * OVD initiate (multipart). Pass file buffers/streams for the two proofs.
+ * One proof as a form-data part.
+ *
+ * A browser cannot put a Buffer in a JSON body, so the SPA sends each proof as
+ * `{ base64, filename, contentType }` (the same base64-in-JSON the ITGI CKYC
+ * create route takes) and it is decoded here. `{ value, options }` — a Buffer
+ * or stream plus form-data options — is still accepted for server-side callers.
+ */
+function ovdFilePart(doc, field) {
+  if (doc && !isEmpty(doc.base64)) {
+    const value = Buffer.from(String(doc.base64).replace(/^data:[^,]*,/, ''), 'base64');
+    if (!value.length) throw validationError(`${field} is empty`, { field });
+    return {
+      value,
+      options: { filename: doc.filename || field, contentType: doc.contentType || 'application/octet-stream' },
+    };
+  }
+  if (doc && doc.value != null) return { value: doc.value, options: doc.options };
+  throw validationError(`${field} is required`, { field });
+}
+
+/**
+ * OVD initiate (multipart).
  * @param {object} input { quoteTransactionId, proofOfIdentityType, proofOfAddressType,
- *                          proofOfIdentity: {value, options}, proofOfAddress: {value, options} }
+ *                          proofOfIdentity, proofOfAddress } — each proof either
+ *                          { base64, filename, contentType } or { value, options }
  * NOTE: requires the `form-data` package for multipart bodies. It is not
  * declared by this service — it is resolved from axios's own dependency tree,
  * exactly as the working implementation resolved it.
@@ -139,6 +181,8 @@ async function ovdInitiate(input) {
       throw validationError(`${field} must be one of ${types.join(', ')}`, { field });
     }
   }
+  const proofOfIdentity = ovdFilePart(input.proofOfIdentity, 'proofOfIdentity');
+  const proofOfAddress = ovdFilePart(input.proofOfAddress, 'proofOfAddress');
 
   let FormData;
   try {
@@ -152,15 +196,43 @@ async function ovdInitiate(input) {
   form.append('quoteTransactionId', input.quoteTransactionId);
   form.append('ProofOfIdentityType', input.proofOfIdentityType);
   form.append('ProofOfAddressType', input.proofOfAddressType);
-  form.append('ProofOfIdentify', input.proofOfIdentity.value, input.proofOfIdentity.options);
-  form.append('ProofOfAddress', input.proofOfAddress.value, input.proofOfAddress.options);
+  // `ProofOfIdentify` — sic, the kit's own spelling of the field.
+  form.append('ProofOfIdentify', proofOfIdentity.value, proofOfIdentity.options);
+  form.append('ProofOfAddress', proofOfAddress.value, proofOfAddress.options);
 
-  const res = await callIcici({
-    operation: 'ovdInitiate',
-    body: form,
-    headers: form.getHeaders(),
-    context: { transactionId: input.quoteTransactionId },
-  });
+  let res;
+  try {
+    res = await callIcici({
+      operation: 'ovdInitiate',
+      body: form,
+      headers: form.getHeaders(),
+      context: { transactionId: input.quoteTransactionId },
+    });
+  } catch (err) {
+    // Documents ICICI decline are an outcome, exactly as a declined CKYC is:
+    // the customer can upload clearer or different ones. Only the Success:false
+    // branch of callIcici builds details WITHOUT an httpStatus — a non-2xx or a
+    // transport failure still propagates as the failure it is.
+    const d = err && err.details;
+    if (err && err.code === 'UPSTREAM_ERROR' && d && !('httpStatus' in d)) {
+      const errorMessage = d.errorMessage || d.displayMessage || null;
+      console.log(
+        `[icici] OVD not verified — transactionId=${input.quoteTransactionId} `
+        + `errorCode=${d.errorCode ?? null} message=${errorMessage ?? 'none'}`
+      );
+      return {
+        result: {
+          ok: true,
+          provider: ICICI_PROVIDER,
+          operation: 'ovdInitiate',
+          data: { isKycSuccess: false, customerName: null, errorMessage },
+          meta: { errorCode: d.errorCode ?? null },
+        },
+        exchange: err.exchange || null,
+      };
+    }
+    throw err;
+  }
   const d = res.data;
   console.log(
     `[icici] OVD initiate parsed — transactionId=${input.quoteTransactionId} `
@@ -171,7 +243,12 @@ async function ovdInitiate(input) {
       ok: true,
       provider: ICICI_PROVIDER,
       operation: 'ovdInitiate',
-      data: { isKycSuccess: !!d.isKycSuccess, customerName: d.CustomerName ?? null, raw: d },
+      data: {
+        isKycSuccess: !!d.isKycSuccess,
+        customerName: d.CustomerName ?? null,
+        errorMessage: d.ErrorMessage ?? null,
+        raw: d,
+      },
       meta: { errorCode: d.ErrorCode },
     },
     exchange: res.exchange,

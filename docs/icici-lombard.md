@@ -100,7 +100,24 @@ from `/ckyc`, `/ckyc/ovd` and `/coi`.
 
 A CKYC that ICICI decline is an **outcome, not an error** — HTTP 200 with
 `data.isKycSuccess: false`, their `displayMessage`, `statusCode` and any
-`ovdLink`.
+`ovdLink`. OVD documents ICICI decline are treated the same way: HTTP 200,
+`data.isKycSuccess: false`, their `errorMessage`.
+
+KYC follows ICICI's kit (CKYC_API_Kit_V2), not another insurer's flow:
+
+1. **CKYC** — one of `panNumber` / `ckycNumber` / `aadhaarNumber`, plus
+   `dateOfBirth` (dd-MMM-yyyy) and the quote's `transactionId`. With Aadhaar,
+   `nameAsPerAadhaar` and `gender` are mandatory; `gender` goes upstream as the
+   kit's `M`/`F` (`Male`/`Female` are mapped).
+2. **OVD** — ICICI's fallback when CKYC declines: `proofOfIdentityType`
+   (`AADHAAR`, `PAN`, `VOTERID`, `PASSPORT`, `DL`), `proofOfAddressType`
+   (`AADHAAR`, `VOTER`, `PASSPORT`, `DL`), and each proof as
+   `{ base64, filename, contentType }` (or `{ value, options }` server-side).
+   Rebuilt here as the kit's multipart upload.
+3. **Proposal** — carries CKYC's `KycID` back as `KYCRefNo` when there is one.
+   A nominee under 18 needs `AppointeeName`, `AppointeeDOB` and
+   `AppointeeRelationship`; ICICI refuse the proposal without them
+   (`errorCode 612`).
 
 Failure:
 
@@ -140,7 +157,7 @@ standalone service's, so its `EL_*` block copies across.
 | `EL_MAX_RETRIES` | | `2` | see **Retries** |
 | `EL_RETRY_BASE_DELAY_MS` | | `500` | doubles per attempt |
 | `EL_API_TIMEOUT_MS` | | `30000` | per attempt, token included |
-| `EL_JSON_BODY_LIMIT` | | `5mb` | |
+| `EL_JSON_BODY_LIMIT` | | `6mb` | two base64 OVD proofs of up to 2 MB each |
 | `EL_DEBUG` | | `0` | full bodies to stdout (never the token call) |
 | `EL_CORS_ORIGINS` | | shared list | |
 | `EL_*_PATH` | | kit paths | contract; leave unset |

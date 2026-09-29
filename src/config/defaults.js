@@ -269,9 +269,11 @@ export const ICICI_DEFAULTS = {
   // HTTP_RETRY_BASE_DELAY_MS default.
   retryBaseDelayMs: 500,
 
-  // The working implementation parsed JSON bodies up to 5mb service-wide; the
-  // OVD upload is the reason ICICI needs more than express's 100kb default.
-  jsonBodyLimit: '5mb',
+  // The OVD upload is the reason ICICI needs more than express's 100kb default:
+  // the SPA sends two proofs of up to 2 MB each, base64-encoded (x4/3) in one
+  // JSON body. 6mb holds that pair — the same limit ITGI's CKYC create uses for
+  // its base64 documents. The working implementation parsed up to 5mb.
+  jsonBodyLimit: '6mb',
 };
 
 // Novacred's own channel identity on every UW Decision / Data Push request
