@@ -120,7 +120,7 @@ async function auditedPost(operation, apiName, body, token, { journeyId, correla
 // GenerateTokenEnc answers `expires_in: 0`, so there is no lifetime to cache a
 // token against. A fresh one is fetched for each KYC operation instead of
 // guessing one.
-async function generateToken(context) {
+async function generateTokenEnc(context) {
   const { username, password } = config.nivabupa.kyc;
   const data = await auditedPost('GenerateTokenEnc', 'KYC_TOKEN', { Username: username, Password: password }, null, context);
   if (!data?.access_token || String(data?.Status) !== '200') {
@@ -130,7 +130,7 @@ async function generateToken(context) {
 }
 
 async function callKyc(operation, apiName, body, context = {}) {
-  const token = await generateToken(context);
+  const token = await generateTokenEnc(context);
   return auditedPost(operation, apiName, body, token, context);
 }
 
@@ -169,7 +169,7 @@ function isValidOtp(otp) {
   return OTP_PATTERN.test(text(otp));
 }
 
-function sendKycOtp({ pan, mobile }, context) {
+function ekycOtpDetailEnc({ pan, mobile }, context) {
   return callKyc('EKYCOTPDetailEnc', 'KYC_OTP_SEND', {
     Pan: text(pan).toUpperCase(),
     MobileNumber: text(mobile),
@@ -181,14 +181,14 @@ function isOtpSent(response) {
   return isSuccess(response) && !isBlank(response?.CYCRequestId) && !isBlank(response?.CKYCTransactionID);
 }
 
-function resendKycOtp({ requestId, transactionId }, context) {
+function reSendOtpEnc({ requestId, transactionId }, context) {
   return callKyc('ReSendOTPEnc', 'KYC_OTP_RESEND', {
     CYCRequestId: requestId,
     CKYCTransactionID: transactionId,
   }, context);
 }
 
-function verifyKycOtp({ requestId, transactionId, otp }, context) {
+function ekycDetailEnc({ requestId, transactionId, otp }, context) {
   const body = { CYCRequestId: requestId, CKYCTransactionID: transactionId, OtpData: text(otp) };
   return callKyc('EKYCDetailEnc', 'KYC_OTP_VERIFY', body, { ...context, auditBody: { ...body, OtpData: '***' } });
 }
@@ -251,6 +251,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // than read off the document: RedirectionLinkEnc answers statusCode 400 with
 // "<field> field is Mandatory" one field at a time, and address, pincode, state
 // and salutation are NOT among them (their page collects the address itself).
+// City is mandatory on NivaBupa's word rather than UAT's — checked here so a
+// missing one is named to the buyer instead of coming back as their 400.
 function validateRedirectRequest(input = {}) {
   const errors = [];
   const { firstName, lastName } = splitName(input);
@@ -259,6 +261,7 @@ function validateRedirectRequest(input = {}) {
   if (!PAN_PATTERN.test(text(input.pan).toUpperCase())) errors.push('A valid PAN is required.');
   if (!MOBILE_PATTERN.test(text(input.mobile))) errors.push('A valid 10-digit mobile number is required.');
   if (!EMAIL_PATTERN.test(text(input.email))) errors.push('A valid email address is required.');
+  if (!text(input.city)) errors.push('City is required — Niva Bupa need it for KYC.');
   if (!toKycDate(input.dob)) errors.push('Date of birth is required.');
   if (!toKycGender(input.gender)) errors.push('Gender is required.');
   if (text(input.applicationNo) && !APPLICATION_NO_PATTERN.test(text(input.applicationNo))) {
@@ -267,8 +270,10 @@ function validateRedirectRequest(input = {}) {
   return errors;
 }
 
-// The address fields go out only when the SPA has them: NivaBupa's page shows
-// whatever is prefilled, and a half-filled address there is worse than none.
+// cityName always goes out — it is mandatory, and validateRedirectRequest has
+// already refused a request without it. The other address fields go out only
+// when the SPA has them: NivaBupa's page shows whatever is prefilled, and a
+// half-filled address there is worse than none.
 function buildRedirectBody(input, { applicationNo, partnerRequestId, callbackUrl }) {
   const { firstName, lastName } = splitName(input);
   const gender = toKycGender(input.gender);
@@ -287,7 +292,7 @@ function buildRedirectBody(input, { applicationNo, partnerRequestId, callbackUrl
     Pan: text(input.pan).toUpperCase(),
   };
   if (text(input.address)) body.addressLine1 = text(input.address);
-  if (text(input.city)) body.city = text(input.city);
+  body.cityName = text(input.city);
   if (text(input.pincode)) body.proposerPinCode = text(input.pincode);
   if (text(input.state)) body.stateName = text(input.state);
   if (text(input.country)) body.COUNTRY = text(input.country);
@@ -297,7 +302,7 @@ function buildRedirectBody(input, { applicationNo, partnerRequestId, callbackUrl
   return body;
 }
 
-function createRedirectionLink(body, context) {
+function redirectionLinkEnc(body, context) {
   return callKyc('RedirectionLinkEnc', 'KYC_REDIRECT_LINK', body, context);
 }
 
@@ -311,7 +316,7 @@ function redirectMessage(response) {
   return text(response?.message) || text(response?.Message) || null;
 }
 
-function fetchKycStatus({ applicationNo, partnerRequestId }, context) {
+function getKycStatusEnc({ applicationNo, partnerRequestId }, context) {
   return callKyc('GetKycStatusEnc', 'KYC_STATUS', {
     ApplicationNo: text(applicationNo),
     PartnerRequestId: text(partnerRequestId),
@@ -319,10 +324,12 @@ function fetchKycStatus({ applicationNo, partnerRequestId }, context) {
 }
 
 // Complete is NivaBupa's own verdict on their own page: IsKycComplete = True.
-// The CKYCID check is the same one the OTP flow makes — a KYC "complete" with
-// no registry identifier is not something to hand underwriting.
+// That alone is the verdict. Only a CKYC-registry match carries a CKYCID — a
+// KYC completed by digital Aadhaar, OVD or document upload comes back complete
+// with CKYCID and CKYC_NUMBER both "" (their document's own GetKycStatusEnc
+// sample is exactly that, KYCType "OVD").
 function isHostedKycComplete(response) {
-  return text(response?.IsKycComplete).toLowerCase() === 'true' && !isBlank(response?.CKYCID);
+  return text(response?.IsKycComplete).toLowerCase() === 'true';
 }
 
 // Their status call answers StatusCode 201 with "Kyc Not Completed" while the
@@ -414,10 +421,21 @@ async function checkKycForUnderwriting(headers, payload) {
 
 // ── Data Push: verified KYC mapping ─────────────────────────────────────────
 //
-// PROPOSER.KYC fields NivaBupa's CKYC OTP verification actually establishes:
-// the CKYC number of the downloaded record, and the PAN it was found by (the
-// response's own PAN when it carries one). Only non-blank verified values are
-// written; every other field the proposal carries stays exactly as built.
+// PROPOSER.KYC fields NivaBupa's verification actually establishes: the CKYC
+// number of the downloaded record, the PAN it was found by (the response's own
+// PAN when it carries one), and — from the hosted flow's GetKycStatusEnc — the
+// identity/address record pointers, which that response returns under the very
+// names Data Push uses. Only non-blank verified values are written: a field
+// NivaBupa left empty (CKYC_NUMBER on an OVD/Aadhaar KYC, all four pointers on
+// the OTP flow) keeps what the proposal carries, which for those is null. Every
+// other field stays exactly as built.
+const VERIFIED_KYC_RECORD_FIELDS = [
+  'KYC_IDENTITY_MASTER_FLAG',
+  'KYC_IDENTITY_RECORD_NUMBER',
+  'KYC_ADDRESS_MASTER_FLAG',
+  'KYC_ADDRESS_RECORD_NUMBER',
+];
+
 function applyVerifiedKycFields(payload, row) {
   const proposer = payload?.Proposal?.PROPOSER;
   if (!proposer || row?.status !== 'VERIFIED') return [];
@@ -430,10 +448,11 @@ function applyVerifiedKycFields(payload, row) {
     proposer.KYC[field] = String(value).trim();
     applied.push(field);
   };
-  // PAN from the OTP flow's response, Pan from the hosted flow's — whichever
-  // this row was verified through.
-  write('CKYC_NUMBER', response.CKYCID || row.ckyc_number);
-  write('PAN_NUMBER', text(response.PAN || response.Pan).toUpperCase() || row.pan);
+  // PAN from the OTP flow's response, Pan / PAN_NUMBER from the hosted flow's —
+  // whichever this row was verified through.
+  write('CKYC_NUMBER', response.CKYCID || response.CKYC_NUMBER || row.ckyc_number);
+  write('PAN_NUMBER', text(response.PAN || response.Pan || response.PAN_NUMBER).toUpperCase() || row.pan);
+  for (const field of VERIFIED_KYC_RECORD_FIELDS) write(field, response[field]);
   return applied;
 }
 
@@ -460,19 +479,19 @@ export {
   newPartnerRequestId,
   validateRedirectRequest,
   buildRedirectBody,
-  createRedirectionLink,
+  redirectionLinkEnc,
   isRedirectIssued,
   redirectMessage,
-  fetchKycStatus,
+  getKycStatusEnc,
   isHostedKycComplete,
   hostedStatusMessage,
   hostedKycStatus,
   validateOtpRequest,
   isValidOtp,
-  sendKycOtp,
+  ekycOtpDetailEnc,
   isOtpSent,
-  resendKycOtp,
-  verifyKycOtp,
+  reSendOtpEnc,
+  ekycDetailEnc,
   isKycVerified,
   isSuccess,
   kycMessage,

@@ -5,9 +5,9 @@
 //   npm run smoke:nivabupa-kyc-redirect
 //
 // Runs the real app in-process and calls, through it:
-//   1. POST /nivabupa/kyc/redirect  → GenerateTokenEnc + RedirectionLinkEnc,
+//   1. POST /nivabupa/kyc/RedirectionLinkEnc  → GenerateTokenEnc + RedirectionLinkEnc,
 //      and prints the KYC page link NivaBupa issued for the buyer
-//   2. POST /nivabupa/kyc/status    → GetKycStatusEnc on that same attempt,
+//   2. POST /nivabupa/kyc/GetKycStatusEnc    → GetKycStatusEnc on that same attempt,
 //      which must report KYC as NOT complete (nobody has opened the link)
 //   3. POST /nivabupa/uw-decision   with that KYC reference — must be refused
 //      BEFORE any uwDecision call
@@ -19,7 +19,7 @@
 //
 // To finish the KYC for real, open the printed link in a browser, complete the
 // page, and run step 2 again with the printed reference:
-//   curl -X POST localhost:4000/nivabupa/kyc/status \
+//   curl -X POST localhost:4000/nivabupa/kyc/GetKycStatusEnc \
 //        -H 'Content-Type: application/json' -d '{"referenceId":"<printed>"}'
 // ─────────────────────────────────────────────────────────────────────────────
 import http from 'node:http';
@@ -37,6 +37,7 @@ const BUYER = {
   mobile: '9876543210',
   pan: 'ABCDE1234F',
   address: 'Test Address',
+  city: 'Mumbai',
   pincode: '400001',
 };
 
@@ -79,8 +80,8 @@ const check = (ok, label) => {
 console.log(`\nNivaBupa hosted KYC live smoke — ${config.nivabupa.kyc.baseUrl}`);
 console.log(`CallBack_URL sent: ${config.nivabupa.kyc.callbackUrl || '(none)'}\n`);
 
-console.log('1. POST /nivabupa/kyc/redirect');
-const started = await call('/nivabupa/kyc/redirect', BUYER);
+console.log('1. POST /nivabupa/kyc/RedirectionLinkEnc');
+const started = await call('/nivabupa/kyc/RedirectionLinkEnc', BUYER);
 console.log(`   HTTP ${started.status} in ${started.ms}ms`, JSON.stringify(started.json));
 check(started.status === 200, 'NivaBupa issued a KYC page link');
 
@@ -99,8 +100,8 @@ if (kyc?.referenceId) {
   console.log('\n   nivabupa_kyc_requests:', JSON.stringify(row));
   check(row?.status === 'LINK_ISSUED', 'the attempt is recorded as LINK_ISSUED');
 
-  console.log('\n2. POST /nivabupa/kyc/status (nobody has opened the link)');
-  const status = await call('/nivabupa/kyc/status', { referenceId: kyc.referenceId });
+  console.log('\n2. POST /nivabupa/kyc/GetKycStatusEnc (nobody has opened the link)');
+  const status = await call('/nivabupa/kyc/GetKycStatusEnc', { referenceId: kyc.referenceId });
   console.log(`   HTTP ${status.status} in ${status.ms}ms`, JSON.stringify(status.json));
   check(status.status === 200, 'NivaBupa answered the status check');
   check(status.json?.kyc?.verified !== true, 'KYC is not verified');

@@ -4,8 +4,8 @@
 //   npm run smoke:nivabupa-kyc
 //
 // Runs the real app in-process and calls, through it:
-//   1. POST /nivabupa/kyc/otp/send  → GenerateTokenEnc + EKYCOTPDetailEnc
-//   2. POST /nivabupa/kyc/otp/verify on that attempt
+//   1. POST /nivabupa/kyc/EKYCOTPDetailEnc  → GenerateTokenEnc + EKYCOTPDetailEnc
+//   2. POST /nivabupa/kyc/EKYCDetailEnc on that attempt
 //   3. POST /nivabupa/uw-decision   with that KYC reference — must be refused
 //      BEFORE any uwDecision call.
 //
@@ -61,8 +61,8 @@ const check = (ok, label) => {
 
 console.log(`\nNivaBupa KYC (CKYC OTP) live smoke — ${config.nivabupa.kyc.baseUrl}\n`);
 
-console.log('1. POST /nivabupa/kyc/otp/send (impossible PAN — no OTP can be delivered)');
-const sent = await call('/nivabupa/kyc/otp/send', { pan: IMPOSSIBLE_PAN, mobile: MOBILE });
+console.log('1. POST /nivabupa/kyc/EKYCOTPDetailEnc (impossible PAN — no OTP can be delivered)');
+const sent = await call('/nivabupa/kyc/EKYCOTPDetailEnc', { pan: IMPOSSIBLE_PAN, mobile: MOBILE });
 console.log(`   HTTP ${sent.status} in ${sent.ms}ms`, JSON.stringify(sent.json));
 check(sent.status === 422 || sent.status === 200, 'NivaBupa answered the OTP request (its verdict is shown above)');
 
@@ -73,8 +73,8 @@ const row = await db.queryOne(
 console.log('   nivabupa_kyc_requests:', JSON.stringify(row));
 
 if (row) {
-  console.log('\n2. POST /nivabupa/kyc/otp/verify on that attempt');
-  const verified = await call('/nivabupa/kyc/otp/verify', { referenceId: row.kyc_reference_id, otp: '123456' });
+  console.log('\n2. POST /nivabupa/kyc/EKYCDetailEnc on that attempt');
+  const verified = await call('/nivabupa/kyc/EKYCDetailEnc', { referenceId: row.kyc_reference_id, otp: '123456' });
   console.log(`   HTTP ${verified.status} in ${verified.ms}ms`, JSON.stringify(verified.json));
   check(verified.json?.kyc?.verified !== true, 'KYC is not verified');
 

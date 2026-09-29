@@ -47,20 +47,20 @@ async function loadAttempt(req, res) {
   return row;
 }
 
-// POST /nivabupa/kyc/redirect
+// POST /nivabupa/kyc/RedirectionLinkEnc
 //
 // Body: { fullName* (or firstName*/lastName*), dob*, gender*, email*, mobile*,
-//         pan*, address?, city?, state?, pincode?, applicationNo?, kycType? }
+//         pan*, city*, address?, state?, pincode?, applicationNo?, kycType? }
 //
 // Asks NivaBupa (RedirectionLinkEnc) for a link to THEIR OWN KYC page for this
 // buyer, and answers it to the SPA, which sends the buyer there. Nothing is
 // verified at this point: the outcome is read back from GetKycStatusEnc by
-// POST /nivabupa/kyc/status, because a buyer who finishes and closes the tab
-// never returns to CallBack_URL and their KYC is complete all the same.
+// POST /nivabupa/kyc/GetKycStatusEnc, because a buyer who finishes and closes
+// the tab never returns to CallBack_URL and their KYC is complete all the same.
 //
 // applicationNo is reused when supplied, so a buyer who starts KYC again keeps
 // the application number the proposal will carry.
-export const startRedirect = async (req, res) => {
+export const redirectionLinkEnc = async (req, res) => {
   if (notConfigured(res)) return undefined;
 
   const input = req.body || {};
@@ -90,7 +90,7 @@ export const startRedirect = async (req, res) => {
 
   let response;
   try {
-    response = await kycService.createRedirectionLink(body, context);
+    response = await kycService.redirectionLinkEnc(body, context);
   } catch (error) {
     await kycRepo.markFailed(kycReferenceId, { message: error.message }).catch(() => {});
     return upstreamError(res, error, 'NivaBupa KYC link request failed');
@@ -138,7 +138,7 @@ export const startRedirect = async (req, res) => {
   });
 };
 
-// POST /nivabupa/kyc/status
+// POST /nivabupa/kyc/GetKycStatusEnc
 //
 // Body: { referenceId* }
 //
@@ -148,7 +148,7 @@ export const startRedirect = async (req, res) => {
 // Safe to call any number of times: a row already VERIFIED answers from what
 // was stored instead of calling NivaBupa again, and an unfinished one is left
 // exactly as it was.
-export const checkStatus = async (req, res) => {
+export const getKycStatusEnc = async (req, res) => {
   if (notConfigured(res)) return undefined;
 
   const row = await loadAttempt(req, res);
@@ -167,7 +167,7 @@ export const checkStatus = async (req, res) => {
 
   let response;
   try {
-    response = await kycService.fetchKycStatus(
+    response = await kycService.getKycStatusEnc(
       { applicationNo: row.application_no, partnerRequestId: row.partner_request_id },
       { journeyId: req.journeyId, correlationId: row.kyc_reference_id }
     );
@@ -177,12 +177,15 @@ export const checkStatus = async (req, res) => {
 
   const verified = kycService.isHostedKycComplete(response);
   const message = kycService.hostedStatusMessage(response) || (verified ? 'KYC verified' : 'KYC is not complete yet.');
+  // Blank on an Aadhaar/OVD/document-upload KYC — stored as NULL, not '', and
+  // never made up.
+  const ckycNumber = response?.CKYCID || response?.CKYC_NUMBER || null;
 
   let saved = row;
   try {
     if (verified) {
       saved = await kycRepo.markVerified(row.kyc_reference_id, {
-        ckycNumber: response.CKYCID,
+        ckycNumber,
         ckycStatus: kycService.hostedKycStatus(response),
         message,
         response: kycService.storableResponse(response),
@@ -202,7 +205,7 @@ export const checkStatus = async (req, res) => {
       status: KYC_STATUS.VERIFIED,
       method: 'CKYC',
       referenceId: row.kyc_reference_id,
-      ckycNumber: response.CKYCID,
+      ckycNumber,
       panNumber: row.pan,
     }, req.journeyContext);
   }
@@ -218,14 +221,14 @@ export const checkStatus = async (req, res) => {
   });
 };
 
-// POST /nivabupa/kyc/otp/send
+// POST /nivabupa/kyc/EKYCOTPDetailEnc
 //
 // Body: { pan*, mobile*, applicationNo? }
 //
 // Asks NivaBupa (EKYCOTPDetailEnc) to send an OTP to the mobile registered on
 // the PAN's CKYC record. applicationNo is reused when supplied, so a buyer who
 // has to start again keeps the application number the proposal will carry.
-export const sendOtp = async (req, res) => {
+export const ekycOtpDetailEnc = async (req, res) => {
   if (notConfigured(res)) return undefined;
 
   const input = req.body || {};
@@ -248,7 +251,7 @@ export const sendOtp = async (req, res) => {
 
   let response;
   try {
-    response = await kycService.sendKycOtp({ pan, mobile }, context);
+    response = await kycService.ekycOtpDetailEnc({ pan, mobile }, context);
   } catch (error) {
     await kycRepo.markFailed(kycReferenceId, { message: error.message }).catch(() => {});
     return upstreamError(res, error, 'NivaBupa KYC OTP request failed');
@@ -290,13 +293,13 @@ export const sendOtp = async (req, res) => {
   });
 };
 
-// POST /nivabupa/kyc/otp/verify
+// POST /nivabupa/kyc/EKYCDetailEnc
 //
 // Body: { referenceId*, otp* }
 //
 // Submits the OTP to NivaBupa (EKYCDetailEnc). `verified` is NivaBupa's answer:
 // true only when they return the CKYC record.
-export const verifyOtp = async (req, res) => {
+export const ekycDetailEnc = async (req, res) => {
   if (notConfigured(res)) return undefined;
 
   const row = await loadAttempt(req, res);
@@ -317,7 +320,7 @@ export const verifyOtp = async (req, res) => {
 
   let response;
   try {
-    response = await kycService.verifyKycOtp(
+    response = await kycService.ekycDetailEnc(
       { requestId: row.ckyc_request_id, transactionId: row.ckyc_transaction_id, otp },
       { journeyId: req.journeyId, correlationId: row.kyc_reference_id }
     );
@@ -361,10 +364,10 @@ export const verifyOtp = async (req, res) => {
   });
 };
 
-// POST /nivabupa/kyc/otp/resend
+// POST /nivabupa/kyc/ReSendOTPEnc
 //
 // Body: { referenceId* }
-export const resendOtp = async (req, res) => {
+export const reSendOtpEnc = async (req, res) => {
   if (notConfigured(res)) return undefined;
 
   const row = await loadAttempt(req, res);
@@ -375,7 +378,7 @@ export const resendOtp = async (req, res) => {
 
   let response;
   try {
-    response = await kycService.resendKycOtp(
+    response = await kycService.reSendOtpEnc(
       { requestId: row.ckyc_request_id, transactionId: row.ckyc_transaction_id },
       { journeyId: req.journeyId, correlationId: row.kyc_reference_id }
     );

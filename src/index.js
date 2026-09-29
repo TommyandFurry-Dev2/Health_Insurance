@@ -71,11 +71,11 @@ export async function startNivabupa() {
   console.log('  CALLBACK : POST /nivabupa/payment/return');
   console.log('  CASE API : POST /nivabupa/proposal-status');
   console.log('  CASE API : POST /nivabupa/policy-download');
-  console.log('  KYC      : POST /nivabupa/kyc/redirect   (Niva Bupa-hosted KYC page)');
-  console.log('  KYC      : POST /nivabupa/kyc/status');
-  console.log('  KYC      : POST /nivabupa/kyc/otp/send');
-  console.log('  KYC      : POST /nivabupa/kyc/otp/verify');
-  console.log('  KYC      : POST /nivabupa/kyc/otp/resend');
+  console.log('  KYC      : POST /nivabupa/kyc/RedirectionLinkEnc   (Niva Bupa-hosted KYC page)');
+  console.log('  KYC      : POST /nivabupa/kyc/GetKycStatusEnc');
+  console.log('  KYC      : POST /nivabupa/kyc/EKYCOTPDetailEnc');
+  console.log('  KYC      : POST /nivabupa/kyc/EKYCDetailEnc');
+  console.log('  KYC      : POST /nivabupa/kyc/ReSendOTPEnc');
   console.log('  LIVENESS : GET  /healthz');
   console.log('  READY    : GET  /readyz        (includes MySQL check)');
   console.log('');

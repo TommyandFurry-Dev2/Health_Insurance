@@ -6,7 +6,8 @@
 //                                         .env (needs migration 003; test rows
 //                                         are removed afterwards)
 //
-// Drives /nivabupa/kyc/otp/*, /nivabupa/uw-decision and /nivabupa/datapush
+// Drives /nivabupa/kyc/{EKYCOTPDetailEnc,EKYCDetailEnc,ReSendOTPEnc},
+// /nivabupa/uw-decision and /nivabupa/datapush
 // through the REAL Express app against a local mock speaking NivaBupa's wire
 // format: encrypted { payload } KYC envelopes, the generic OAuth token,
 // uwDecision and datapush. No request leaves this machine.
@@ -283,7 +284,7 @@ await test('unconfigured KYC answers 503 and underwriting is refused without cal
   const saved = config.nivabupa.kyc.password;
   config.nivabupa.kyc.password = undefined;
   try {
-    const send = await call('POST', '/nivabupa/kyc/otp/send', BUYER);
+    const send = await call('POST', '/nivabupa/kyc/EKYCOTPDetailEnc', BUYER);
     eq(send.status, 503, 'send status');
     assert(send.json.message.includes('NIVABUPA_KYC_PASSWORD'), 'message names the missing variable');
     const before = hits('/api/generic/uwDecision').length;
@@ -296,7 +297,7 @@ await test('unconfigured KYC answers 503 and underwriting is refused without cal
 });
 
 await test('send validates PAN and mobile before any upstream call', async () => {
-  const res = await call('POST', '/nivabupa/kyc/otp/send', { pan: 'NOTAPAN', mobile: '12' });
+  const res = await call('POST', '/nivabupa/kyc/EKYCOTPDetailEnc', { pan: 'NOTAPAN', mobile: '12' });
   eq(res.status, 400, 'status');
   eq(hits(`${KYC}/GenerateTokenEnc`).length, 0, 'no token call');
   eq(hits(`${KYC}/EKYCOTPDetailEnc`).length, 0, 'no OTP call');
@@ -319,7 +320,7 @@ await test('Data Push without a KYC reference is never blocked and is sent exact
 
 if (!WITH_DB) {
   await test('without a database, send answers 503 BEFORE an OTP is requested (no OTP wasted)', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/send', BUYER);
+    const res = await call('POST', '/nivabupa/kyc/EKYCOTPDetailEnc', BUYER);
     eq(res.status, 503, 'status');
     eq(hits(`${KYC}/EKYCOTPDetailEnc`).length, 0, 'no OTP call');
   });
@@ -344,7 +345,7 @@ if (WITH_DB) {
   let kyc;
 
   await test('a PAN NivaBupa rejects answers 422 with NivaBupa\'s message', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/send', { ...BUYER, pan: REJECTED_PAN });
+    const res = await call('POST', '/nivabupa/kyc/EKYCOTPDetailEnc', { ...BUYER, pan: REJECTED_PAN });
     eq(res.status, 422, 'status');
     assert(res.json.message.includes('(404) Not Found'), res.json.message);
     const row = await db.queryOne(
@@ -356,7 +357,7 @@ if (WITH_DB) {
   });
 
   await test('send calls GenerateTokenEnc + EKYCOTPDetailEnc with the documented headers and body', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/send', BUYER);
+    const res = await call('POST', '/nivabupa/kyc/EKYCOTPDetailEnc', BUYER);
     eq(res.status, 200, 'status');
     kyc = res.json.kyc;
     createdReferences.push(kyc.referenceId);
@@ -378,14 +379,14 @@ if (WITH_DB) {
   });
 
   await test('send reuses a supplied applicationNo (sending again keeps the number)', async () => {
-    const res = await call('POST', '/health/nivabupa/kyc/otp/send', { ...BUYER, applicationNo: kyc.applicationNo });
+    const res = await call('POST', '/health/nivabupa/kyc/EKYCOTPDetailEnc', { ...BUYER, applicationNo: kyc.applicationNo });
     eq(res.status, 200, 'status (via /health alias)');
     createdReferences.push(res.json.kyc.referenceId);
     eq(res.json.kyc.applicationNo, kyc.applicationNo, 'applicationNo');
   });
 
   await test('a wrong OTP is not verified, and NivaBupa\'s message is returned', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/verify', { referenceId: kyc.referenceId, otp: '000000' });
+    const res = await call('POST', '/nivabupa/kyc/EKYCDetailEnc', { referenceId: kyc.referenceId, otp: '000000' });
     eq(res.status, 200, 'status');
     eq(res.json.kyc.verified, false, 'verified');
     eq(res.json.kyc.message, 'Invalid OTP', 'message');
@@ -403,7 +404,7 @@ if (WITH_DB) {
   });
 
   await test('resend uses the stored CKYC identifiers, not anything from the browser', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/resend', { referenceId: kyc.referenceId, CYCRequestId: 'forged' });
+    const res = await call('POST', '/nivabupa/kyc/ReSendOTPEnc', { referenceId: kyc.referenceId, CYCRequestId: 'forged' });
     eq(res.status, 200, 'status');
     assert(res.json.kyc.message.includes('remaining attempts'), res.json.kyc.message);
     const sent = decryptBody(hits(`${KYC}/ReSendOTPEnc`).at(-1));
@@ -412,13 +413,13 @@ if (WITH_DB) {
 
   await test('verify with an unknown reference answers 404 without calling NivaBupa', async () => {
     const before = hits(`${KYC}/EKYCDetailEnc`).length;
-    const res = await call('POST', '/nivabupa/kyc/otp/verify', { referenceId: '999999999999999', otp: TEST.otp });
+    const res = await call('POST', '/nivabupa/kyc/EKYCDetailEnc', { referenceId: '999999999999999', otp: TEST.otp });
     eq(res.status, 404, 'status');
     eq(hits(`${KYC}/EKYCDetailEnc`).length, before, 'EKYCDetailEnc calls');
   });
 
   await test('the correct OTP is verified by NivaBupa; the browser gets a masked summary only', async () => {
-    const res = await call('POST', '/nivabupa/kyc/otp/verify', { referenceId: kyc.referenceId, otp: TEST.otp });
+    const res = await call('POST', '/nivabupa/kyc/EKYCDetailEnc', { referenceId: kyc.referenceId, otp: TEST.otp });
     eq(res.status, 200, 'status');
     eq(res.json.kyc.verified, true, 'verified');
     eq(res.json.kyc.name, 'Deepak Singh', 'name');
@@ -430,7 +431,7 @@ if (WITH_DB) {
 
   await test('verifying again is answered from the stored result without another NivaBupa call', async () => {
     const before = hits(`${KYC}/EKYCDetailEnc`).length;
-    const res = await call('POST', '/nivabupa/kyc/otp/verify', { referenceId: kyc.referenceId, otp: '111111' });
+    const res = await call('POST', '/nivabupa/kyc/EKYCDetailEnc', { referenceId: kyc.referenceId, otp: '111111' });
     eq(res.status, 200, 'status');
     eq(res.json.kyc.verified, true, 'verified');
     eq(hits(`${KYC}/EKYCDetailEnc`).length, before, 'EKYCDetailEnc calls');
