@@ -11,6 +11,10 @@ node_modules/
 # server — never commit it, and a stray copy must not block a git pull.
 returnmessage*.txt
 
+# `users` table dumps taken by scripts/setup-database.js before a migration
+# alters it. Customer data — never commit.
+backups/
+
 npm-debug.log*
 logs/
 *.log

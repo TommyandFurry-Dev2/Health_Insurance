@@ -14,6 +14,8 @@
     "migrate": "node scripts/migrate.js",
     "migrate:status": "node scripts/migrate.js --status",
     "migrate:verify": "node scripts/migrate.js --verify",
+    "db:check": "node scripts/setup-database.js --check",
+    "db:setup": "node scripts/setup-database.js",
     "verify": "node scripts/verify.js",
     "verify:live": "node scripts/verify.js --live",
     "smoke:premium": "node scripts/smoke-premium.js",
