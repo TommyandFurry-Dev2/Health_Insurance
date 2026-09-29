@@ -13,7 +13,8 @@
 --   GET  /nivabupa/token/test       → nivabupa_api_transactions only (infra)
 --
 -- ── Why every table is prefixed `nivabupa_` ────────────────────────────────
--- policy_db is NOT a dedicated database. It already holds ~90 tables belonging
+-- The database (DB_DATABASE — policy_db on the original server) is NOT a
+-- dedicated database. It already holds ~90 tables belonging
 -- to a Laravel motor-insurance application (vehicle_master, zuno_quotes,
 -- shriram_payments, sessions, wallets, users, …). Unprefixed names collide with
 -- it, and the failure is silent rather than loud: CREATE TABLE IF NOT EXISTS
@@ -47,11 +48,10 @@
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 1;
 
-CREATE DATABASE IF NOT EXISTS `policy_db`
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE `policy_db`;
+-- No CREATE DATABASE / USE here, and no schema name anywhere below:
+-- scripts/migrate.js creates the database named by DB_DATABASE and runs every
+-- migration connected to it, so these files work whatever the database is
+-- called on a given server. Catalogue checks use DATABASE() for the same reason.
 
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS `nivabupa_journey_quotes` (
 -- (DDL is not transactional — see scripts/migrate.js).
 SET @fk_exists := (
   SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
-  WHERE CONSTRAINT_SCHEMA = 'policy_db'
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_journeys'
     AND CONSTRAINT_NAME = 'fk_nb_journeys_selected_quote'
 );
@@ -606,7 +606,7 @@ CREATE TABLE IF NOT EXISTS `nivabupa_api_transactions` (
 -- selected_quote_id FK can be added). Same catalogue guard as above.
 SET @fk_exists := (
   SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
-  WHERE CONSTRAINT_SCHEMA = 'policy_db'
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_journey_quotes'
     AND CONSTRAINT_NAME = 'fk_nb_quotes_api_transaction'
 );

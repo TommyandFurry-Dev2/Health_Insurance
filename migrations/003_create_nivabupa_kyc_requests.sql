@@ -23,7 +23,8 @@
 
 SET NAMES utf8mb4;
 
-USE `policy_db`;
+-- No USE: scripts/migrate.js runs this connected to the database named by
+-- DB_DATABASE, whatever it is called on a given server.
 
 CREATE TABLE IF NOT EXISTS `nivabupa_kyc_requests` (
   `id`                   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

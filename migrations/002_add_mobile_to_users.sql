@@ -29,12 +29,13 @@
 
 SET NAMES utf8mb4;
 
-USE `policy_db`;
+-- No USE: scripts/migrate.js runs this connected to the database named by
+-- DB_DATABASE, whatever it is called on a given server.
 
 -- ── mobile column ──────────────────────────────────────────────────────────
 SET @column_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'users'
     AND COLUMN_NAME = 'mobile'
 );
@@ -52,7 +53,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- same buyer from producing two user rows.
 SET @index_exists := (
   SELECT COUNT(*) FROM information_schema.STATISTICS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'users'
     AND INDEX_NAME = 'uk_users_mobile'
 );

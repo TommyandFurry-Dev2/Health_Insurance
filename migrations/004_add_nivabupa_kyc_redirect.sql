@@ -33,12 +33,13 @@
 
 SET NAMES utf8mb4;
 
-USE `policy_db`;
+-- No USE: scripts/migrate.js runs this connected to the database named by
+-- DB_DATABASE, whatever it is called on a given server.
 
 -- ── partner_request_id ─────────────────────────────────────────────────────
 SET @column_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_kyc_requests'
     AND COLUMN_NAME = 'partner_request_id'
 );
@@ -52,7 +53,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- ── nbhi_reference_no ──────────────────────────────────────────────────────
 SET @column_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_kyc_requests'
     AND COLUMN_NAME = 'nbhi_reference_no'
 );
@@ -69,7 +70,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- ceiling, and a truncated link is a dead link.
 SET @column_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_kyc_requests'
     AND COLUMN_NAME = 'redirect_url'
 );
@@ -83,7 +84,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- ── status ENUM gains LINK_ISSUED ──────────────────────────────────────────
 SET @has_value := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_kyc_requests'
     AND COLUMN_NAME = 'status'
     AND COLUMN_TYPE LIKE '%LINK_ISSUED%'
@@ -102,7 +103,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- second attempt row.
 SET @index_exists := (
   SELECT COUNT(*) FROM information_schema.STATISTICS
-  WHERE TABLE_SCHEMA = 'policy_db'
+  WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'nivabupa_kyc_requests'
     AND INDEX_NAME = 'idx_nb_kyc_req_partner_request'
 );

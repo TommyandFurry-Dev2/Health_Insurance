@@ -74,9 +74,9 @@ function migrationFiles() {
   return fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
 }
 
-// Every migration file switches to its schema by name (`USE \`policy_db\``)
-// rather than reading DB_DATABASE, so the two must agree or the tables are
-// created where the app never looks.
+// Migrations run in whatever database DB_DATABASE names — none of them names a
+// schema. This guards that: a file that did (`USE \`some_db\``) would create
+// its tables where the app never looks unless the two agreed.
 function migrationSchemas() {
   const names = new Set();
   for (const file of migrationFiles()) {
