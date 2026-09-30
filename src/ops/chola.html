@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Where the Chola router is mounted ('/chola-ms' or '/health/chola-ms').
+     Filled in by controllers/chola.controller.js opsScreen. -->
+<meta name="chola-base" content="__CHOLA_BASE__">
+<title>Chola MS ops</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#5d6675; --line:#dfe3ea;
+          --ok:#1f7a3f; --okbg:#e3f4e8; --bad:#a3261c; --badbg:#fbe6e3; --warn:#8a5a00; --warnbg:#fdf1d8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1c2027; --text:#e6e9ee; --muted:#9aa3b2; --line:#2e343e;
+            --ok:#7fd49b; --okbg:#193524; --bad:#ff9d93; --badbg:#3d1c19; --warn:#f2c76b; --warnbg:#3a2e12; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, sans-serif; }
+  main { max-width:1200px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.lede { color:var(--muted); margin:0 0 16px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  input, button { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--text); }
+  button { cursor:pointer; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .POLICY_ISSUED { color:var(--ok); background:var(--okbg); }
+  .PAYMENT_FAILED, .NEEDS_REVIEW { color:var(--bad); background:var(--badbg); }
+  .PAYMENT_PENDING, .POLICY_GENERATION_SENT { color:var(--warn); background:var(--warnbg); }
+  .err { color:var(--bad); font-weight:600; }
+  .muted { color:var(--muted); }
+  pre { white-space:pre-wrap; word-break:break-all; background:var(--bg); padding:10px; border-radius:6px; margin:6px 0; }
+  #status { margin:12px 0; }
+  #evidence { margin-top:16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Chola MS: PolicyGeneration (ops)</h1>
+  <p class="lede">Proposals the backend has tagged payment for, and the raw PolicyGeneration evidence. Internal only.</p>
+  <div class="bar">
+    <input id="key" type="password" placeholder="Ops key" autocomplete="off">
+    <button id="load">Load</button>
+  </div>
+  <div id="status" class="muted"></div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Proposal</th><th>Product</th><th>Mode</th><th>Amount</th><th>Status</th><th>Policy / detail</th><th>Updated</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div id="evidence"></div>
+</main>
+<!-- A file, not inline: helmet's Content-Security-Policy (script-src 'self')
+     blocks inline scripts. -->
+<script src="__CHOLA_BASE__/ops/chola-ops.js" defer></script>
+</body>
+</html>

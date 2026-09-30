@@ -30,7 +30,11 @@ import config, {
   partialFgGcKycVariables,
   missingIciciVariables,
   iciciIsUnconfigured,
+  missingCholaVariables,
+  cholaIsUnconfigured,
+  missingCholaCkycVariables,
 } from './env.js';
+import { CHOLA_PAYMENT_MODES } from '../constants/chola.constants.js';
 
 // Without these, the named flow cannot work at all — there is no fallback and
 // no way to synthesise one.
@@ -214,7 +218,74 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   }
   console.log('');
 
+  // ── Chola MS ──
+  //
+  // Reported the ICICI way and for the same reason: no bundled fallbacks, so a
+  // value is either set or missing, and missing means the /chola-ms endpoints
+  // answer 503 while everything else keeps working. The CKYC portal has its own
+  // credentials and is reported as its own leg.
+  const cholaMissing = missingCholaVariables();
+  const cholaCkycMissing = missingCholaCkycVariables();
+  console.log('  Chola MS (optional — every other insurer is unaffected either way)');
+  if (cholaIsUnconfigured()) {
+    console.log('    not configured — /chola-ms endpoints answer 503');
+  } else {
+    console.log('    base URL                :', describeUrl(config.chola.baseUrl));
+    console.log('    CHOLA_CLIENT_ID         :', describeSecret(config.chola.clientId));
+    console.log('    CHOLA_CLIENT_SECRET     :', describeSecret(config.chola.clientSecret));
+    console.log('    CHOLA_INTERMEDIARY_CODE :', describeSecret(config.chola.intermediaryCode));
+    console.log('    Super Topup ProposalSave:', describeUrl(config.chola.topupProposalUrl));
+    console.log('    CKYC portal             :', describeUrl(config.chola.ckyc.baseUrl));
+    console.log('    CHOLA_CKYC_PRIVATE_KEY  :', describeSecret(config.chola.ckyc.privateKey));
+    console.log('    payment mode            :', config.chola.paymentMode);
+    console.log('    CHOLA_OPS_KEY           :', describeSecret(config.chola.opsKey));
+  }
+  console.log('');
+
   const fatal = [];
+
+  if (!cholaIsUnconfigured()) {
+    if (cholaMissing.length > 0) {
+      console.warn('  ⚠️  Chola MS is PARTIALLY configured — missing:');
+      console.warn(`       ${cholaMissing.join(', ')}`);
+      console.warn('       The /chola-ms endpoints will answer 503 until these are set.');
+      console.warn('');
+      // Not fatal in production, for the same reason a half-configured ICICI is
+      // not: it must not stop a working deployment of the others booting.
+      if (strict) fatal.push(...cholaMissing);
+    }
+    if (cholaCkycMissing.length > 0) {
+      console.warn(`  ⚠️  Chola MS CKYC is not configured — missing ${cholaCkycMissing.join(', ')}.`);
+      console.warn('       Quote, proposal and PolicyGeneration work; the CKYC routes do not.');
+      console.warn('');
+    }
+    if (!CHOLA_PAYMENT_MODES.includes(config.chola.paymentMode)) {
+      console.warn(`  ⚠️  CHOLA_PAYMENT_MODE "${config.chola.paymentMode}" is not one of ${CHOLA_PAYMENT_MODES.join(', ')}.`);
+      console.warn('       Backend-built PolicyGeneration (the ops route) will answer 503.');
+      console.warn('');
+    }
+    // Refused at request time rather than here: a boot failure would take every
+    // other insurer down with it. Said loudly, because it is the accident.
+    if (isProduction && config.chola.paymentMode === 'APD') {
+      console.error('  ❌ CHOLA_PAYMENT_MODE=APD with NODE_ENV=production. APD is UAT-only and is refused:');
+      console.error('       every Chola PolicyGeneration will answer 503 until the mode is changed.');
+      console.error('');
+    }
+    // The accident this whole report exists for: NODE_ENV says production, a
+    // Chola host says UAT. The Super Topup host is "genconpreprod", which none of
+    // looksLikeUat()'s words cover, so pre-prod is named explicitly.
+    const cholaUatEndpoints = [
+      ['CHOLA_BASE_URL', config.chola.baseUrl],
+      ['CHOLA_CKYC_BASE_URL', config.chola.ckyc.baseUrl],
+      ['CHOLA_TOPUP_PROPOSAL_URL', config.chola.topupProposalUrl],
+    ].filter(([, value]) => looksLikeUat(value) || /preprod/i.test(value || '')).map(([name]) => name);
+    if (isProduction && cholaUatEndpoints.length > 0) {
+      console.error('  ❌ NODE_ENV=production but these Chola MS endpoints still point at UAT/pre-prod:');
+      console.error(`       ${cholaUatEndpoints.join(', ')}`);
+      console.error('');
+      fatal.push(...cholaUatEndpoints);
+    }
+  }
 
   if (!iciciIsUnconfigured()) {
     if (iciciMissing.length > 0) {

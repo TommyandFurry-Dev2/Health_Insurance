@@ -13,6 +13,7 @@ import journey_routes from './journey.routes.js';
 import itgi_routes from './itgi.routes.js';
 import fg_routes from './fg.routes.js';
 import icici_routes from './icici.routes.js';
+import chola_routes from './chola.routes.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
@@ -64,6 +65,17 @@ export const FG_PATH_PREFIX = '/future-generali';
 // gateway returns the buyer to the SPA directly — so it is fixed only by the
 // route table (routes/icici.routes.js) and the SPA's api/elevate.js.
 export const ICICI_PATH_PREFIX = '/icici-lombard';
+
+// Every Chola MS route lives under this one prefix, and so does every piece of
+// its middleware — the same scoping property the four prefixes above have, and
+// for the same reason: it lets createCholaRouter() be mounted twice (at '/' and
+// at the compatibility alias) without its middleware running twice.
+//
+// A literal, not env-driven, like the others. Like ICICI there is no payment
+// callback behind it that an insurer holds a copy of — Chola's hosted payment
+// page returns the buyer to the SPA directly — so it is fixed only by the route
+// table (routes/chola.routes.js) and the SPA's api/chola.js.
+export const CHOLA_PATH_PREFIX = '/chola-ms';
 
 // verify: captures the exact raw bytes on req.rawBody before the body is
 // decoded — kept from the original backend for diagnosing the NivaBupa
@@ -279,6 +291,53 @@ export function createIciciRouter() {
   // app.js's own handlers instead of being answered here.
   router.use(ICICI_PATH_PREFIX, notFound);
   router.use(ICICI_PATH_PREFIX, errorHandler);
+
+  return router;
+}
+
+// The Chola MS router — a sibling of the four above, built the same way and
+// scoped just as tightly to its own prefix. Kept separate for the same reason
+// they are separate from each other: the integrations must be able to fail
+// independently. Nothing here can affect a NivaBupa, IFFCO Tokio, Future
+// Generali or ICICI request, and a Chola deployment that was never configured
+// simply answers 503 on its own paths.
+//
+// Differences from the NivaBupa stack, each deliberate:
+//   * body limit — CHOLA_JSON_BODY_LIMIT, 5mb by default: the limit the working
+//     implementation parsed every Chola body under.
+//   * urlencoded — extended:false, matching the working implementation's
+//     parser. No Chola route expects a form body today.
+//   * no rate limiting — same policy as every other insurer router.
+//   * its own CORS list — CHOLA_CORS_ORIGINS, falling back to the shared one.
+//     The ops routes' X-Ops-Key is a non-safelisted header; cors() reflects the
+//     requested headers on the preflight, so it is admitted.
+export function createCholaRouter() {
+  const router = express.Router();
+
+  router.use(
+    CHOLA_PATH_PREFIX,
+    cors(corsOptions(config.chola.corsOrigins)),
+    express.json({ limit: config.chola.jsonBodyLimit }),
+    express.urlencoded({ extended: false, limit: config.chola.jsonBodyLimit }),
+    logRequest,
+  );
+
+  // The same optional journey resolution the other routers use, reused rather
+  // than reimplemented. It hangs an optional journey on the request so Chola
+  // calls can be audited against it, and it DELETES journeyId / resumeToken
+  // from the body so neither is forwarded into a Chola payload, which is sent
+  // upstream verbatim and has no such member.
+  //
+  // Its journey-API bypass keys on '/nivabupa/journey', which no Chola path
+  // matches, so every Chola request takes the normal branch.
+  router.use(CHOLA_PATH_PREFIX, resolveJourney);
+
+  router.use(chola_routes);
+
+  // Path-scoped, so a request that is not for this router falls through to
+  // app.js's own handlers instead of being answered here.
+  router.use(CHOLA_PATH_PREFIX, notFound);
+  router.use(CHOLA_PATH_PREFIX, errorHandler);
 
   return router;
 }

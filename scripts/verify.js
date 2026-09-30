@@ -251,6 +251,29 @@ const EXPECTED_ROUTES = [
   'POST /icici-lombard/emi/due',
   'POST /icici-lombard/emi/process',
   'POST /icici-lombard/zone',
+  // Chola MS. Registered whether or not Chola is configured — an unconfigured
+  // deployment answers 503 on these paths rather than 404. Each operation is
+  // served under Chola's own name and under the short name the SPA calls.
+  'GET /chola-ms/config/test',
+  'POST /chola-ms/PremiumComputation',
+  'POST /chola-ms/CholaMS_CKYC_Verify',
+  'POST /chola-ms/CholaMS_CKYC_Query',
+  'POST /chola-ms/ProposalSave',
+  'POST /chola-ms/PolicyGeneration',
+  'POST /chola-ms/PolicySchedule',
+  'POST /chola-ms/quote',
+  'POST /chola-ms/proposal',
+  'POST /chola-ms/issue',
+  'POST /chola-ms/policy/schedule',
+  'POST /chola-ms/ckyc/verify',
+  'POST /chola-ms/ckyc/query',
+  'GET /chola-ms/ops',
+  'GET /chola-ms/ops/chola-ops.js',
+  'POST /chola-ms/ops/PolicyGeneration',
+  'GET /chola-ms/ops/PolicyGeneration/logs',
+  'GET /chola-ms/ops/proposals',
+  'GET /chola-ms/ops/proposals/:proposalNo/PolicyGeneration',
+  'GET /chola-ms/ops/proposals/:proposalNo/pdf',
   'GET /healthz',
   'GET /readyz',
 ];
@@ -258,7 +281,7 @@ const EXPECTED_ROUTES = [
 // Both insurer prefixes are served a second time under the compatibility alias.
 // For ITGI that is not merely a compatibility nicety: the payment response URL
 // registered with them goes through it (…/health/iffcotokio/payment/return).
-const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/', '/icici-lombard/'];
+const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/', '/icici-lombard/', '/chola-ms/'];
 
 check(`all ${EXPECTED_ROUTES.length} routes registered at the primary mount`, () => {
   const missing = EXPECTED_ROUTES.filter((route) => !registered.has(route));

@@ -276,6 +276,68 @@ export const ICICI_DEFAULTS = {
   jsonBodyLimit: '6mb',
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Chola MS (Cholamandalam MS General Insurance) — Health (OAuth2 REST/JSON),
+// plus the CKYC e-policy portal.
+//
+// Follows the ITGI / FG / ICICI rule, not the NivaBupa one: there is NO host,
+// NO client id/secret, NO intermediary code and NO CKYC private key here, and
+// there must never be one. The working NovaCred implementation bundled the UAT
+// hosts as defaults for CHOLA_BASE_URL, CHOLA_CKYC_BASE_URL and
+// CHOLA_TOPUP_PROPOSAL_URL — exactly the defaults this rule exists to remove. A
+// process without CHOLA_BASE_URL, CHOLA_CLIENT_ID, CHOLA_CLIENT_SECRET and
+// CHOLA_INTERMEDIARY_CODE cannot reach Chola at all; the /chola-ms endpoints
+// answer 503 naming the missing variables.
+//
+// What IS here is CONTRACT — the request paths appended to the two base URLs
+// (from Chola's Flexi Health / Supreme / Super Topup and UAT_CKYC Postman
+// collections), identical in UAT and production, plus the behaviour defaults
+// the working implementation shipped. Paths stay overridable (CHOLA_*_PATH) so
+// a path change on Chola's side is a .env edit.
+// ─────────────────────────────────────────────────────────────────────────────
+export const CHOLA_DEFAULTS = {
+  paths: {
+    // Appended to CHOLA_BASE_URL.
+    token: '/oauth2/token',
+    // Every product operation. {product} is the product's path segment
+    // (constants/chola.constants.js CHOLA_PRODUCTS) and {operation} one of
+    // PremiumComputation | ProposalSave | PolicyGeneration | PolicySchedule.
+    product: '/endpoint/{product}/v1.0.0/{operation}',
+    // Appended to CHOLA_CKYC_BASE_URL. Case-sensitive exactly as the kit spells
+    // them: Auth is under /epolicyv3api, Verify and Query under /Epolicyv3API.
+    ckycAuth: '/epolicyv3api/api/KYC/CholaMS_CKYC_Auth',
+    ckycVerify: '/Epolicyv3API/api/KYC/CholaMS_CKYC_Verify',
+    ckycQuery: '/Epolicyv3API/api/KYC/CholaMS_CKYC_Query',
+  },
+
+  // Every Chola route lives under this prefix. Not env-driven, for the same
+  // reason the other insurer prefixes are not: it is baked into the route table
+  // (routes/chola.routes.js).
+  pathPrefix: '/chola-ms',
+
+  // How the BACKEND tags payment when it builds PolicyGeneration itself (the ops
+  // route, and the website's route under APD): PG_CHOLA | PG_DIRECT | APD. The
+  // working implementation's default.
+  paymentMode: 'PG_CHOLA',
+
+  // Refresh the OAuth2 token this many seconds before its stated expiry.
+  tokenSkewSeconds: 60,
+
+  // Product-call retries on transport failures and 502/503/504 — the working
+  // implementation's CHOLA_MAX_RETRIES default. The token and CKYC calls use 1,
+  // and the backend-built PolicyGeneration 0 (it is sent once, never retried).
+  maxRetries: 2,
+
+  // First retry delay; doubles per attempt. The working implementation's
+  // HTTP_RETRY_BASE_DELAY_MS default.
+  retryBaseDelayMs: 500,
+
+  // The working implementation parsed every body up to 5mb. Chola carry no
+  // document uploads, but a family ProposalSave is not small, and matching the
+  // limit it has always run under costs nothing.
+  jsonBodyLimit: '5mb',
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.
@@ -367,6 +429,18 @@ export const TIMEOUT_DEFAULTS = {
   // The working implementation's HTTP_TIMEOUT_MS default, which every Elevate
   // call (token included) ran under. Kept under the frontend's 60s axios budget.
   icici: 30000,
+
+  // ── Chola MS ──
+  // The working implementation's HTTP_TIMEOUT_MS default, which every Chola
+  // call (token and CKYC included) ran under. Kept under the SPA's 60s axios
+  // budget (api/cholaClient.js).
+  chola: 30000,
+  // PolicyGeneration built by the BACKEND (APD) gets its own, much longer
+  // budget. It took 23.8 s on UAT (2026-09-28) against the 30 s above, and
+  // giving up early is the expensive failure: the request has been sent, the
+  // deposit may be debited, and the proposal becomes NEEDS_REVIEW for a person
+  // to reconcile. The working implementation hard-coded this value.
+  cholaPolicyGeneration: 120000,
 };
 
 // Ours, not NivaBupa's — see config/env.js for why each default is what it is.

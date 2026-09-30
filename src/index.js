@@ -24,6 +24,7 @@ import config, {
   missingItgiVariables, itgiIsUnconfigured,
   missingFgVariables, missingFgPaymentVariables, fgIsUnconfigured, fgCkycFlavour,
   missingIciciVariables, iciciIsUnconfigured,
+  missingCholaVariables, cholaIsUnconfigured, missingCholaCkycVariables,
 } from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
@@ -35,11 +36,13 @@ export {
   createItgiRouter,
   createFgRouter,
   createIciciRouter,
+  createCholaRouter,
   createNivabupaProbeRouter,
   NIVABUPA_PATH_PREFIX,
   ITGI_PATH_PREFIX,
   FG_PATH_PREFIX,
   ICICI_PATH_PREFIX,
+  CHOLA_PATH_PREFIX,
 } from './routes/index.js';
 
 let sweeper = null;
@@ -108,6 +111,7 @@ export async function startNivabupa() {
   reportItgi(alias);
   reportFg(alias);
   reportIcici(alias);
+  reportChola(alias);
 
   const dbStatus = await db.verifyConnection();
   if (dbStatus.ok) {
@@ -311,6 +315,67 @@ function reportIcici(alias) {
   if (!config.icici.clientName) {
     console.warn('  ⚠️  EL_CLIENT_NAME is not set — the certificate-of-insurance path will carry an');
     console.warn('     empty {clientname} segment and /icici-lombard/coi will fail.');
+  }
+  if (missing.length > 0) {
+    console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
+}
+
+// The Chola MS half of the boot banner.
+//
+// Printed even when Chola is not configured, and it says so — same reasoning as
+// the other insurers. Neither state affects any other insurer, and neither
+// stops this process starting.
+//
+// No client id, secret, intermediary code, CKYC key or ops key is printed. The
+// hosts and the payment mode are — the mode decides whether the website's
+// PolicyGeneration spends NovaCred's deposit.
+function reportChola(alias) {
+  console.log('');
+  console.log('🩺 Chola MS — Flexi Health / Supreme / Super Topup');
+  console.log('');
+
+  if (cholaIsUnconfigured()) {
+    console.log('  Not configured — the /chola-ms endpoints answer 503 naming what is missing.');
+    console.log('  Set CHOLA_BASE_URL, CHOLA_CLIENT_ID, CHOLA_CLIENT_SECRET and CHOLA_INTERMEDIARY_CODE.');
+    console.log('  Niva Bupa, IFFCO Tokio, Future Generali and ICICI Lombard are unaffected.');
+    return;
+  }
+
+  const missing = missingCholaVariables();
+  const ckycMissing = missingCholaCkycVariables();
+
+  console.log('  CONFIG   : GET  /chola-ms/config/test');
+  console.log('  QUOTE    : POST /chola-ms/PremiumComputation     (also /chola-ms/quote)');
+  console.log('  CKYC     : POST /chola-ms/CholaMS_CKYC_Verify    (also /chola-ms/ckyc/verify)');
+  console.log('  CKYC     : POST /chola-ms/CholaMS_CKYC_Query     (also /chola-ms/ckyc/query)');
+  console.log('  PROPOSAL : POST /chola-ms/ProposalSave           (also /chola-ms/proposal)');
+  console.log('  PAYMENT  : POST /chola-ms/PolicyGeneration       (also /chola-ms/issue) ⚠️ not idempotent');
+  console.log('  DOCUMENT : POST /chola-ms/PolicySchedule         (also /chola-ms/policy/schedule)');
+  console.log('  OPS      : /chola-ms/ops/*                       X-Ops-Key; screen at GET /chola-ms/ops');
+  console.log('');
+  if (alias) {
+    console.log(`  (every /chola-ms route is also served under the ${alias} prefix)`);
+  }
+  console.log(`  Upstream base      → ${config.chola.baseUrl || '(CHOLA_BASE_URL not set)'}`);
+  console.log(`  Super Topup save   → ${config.chola.topupProposalUrl || '(CHOLA_TOPUP_PROPOSAL_URL not set — Super Topup ProposalSave answers 503)'}`);
+  console.log(`  CKYC portal        → ${config.chola.ckyc.baseUrl || '(CHOLA_CKYC_BASE_URL not set)'}`);
+  console.log(`  Payment mode       → ${config.chola.paymentMode}`);
+  console.log(`  Ops routes         → ${config.chola.opsKey ? 'enabled' : 'disabled (CHOLA_OPS_KEY not set)'}`);
+
+  if (config.chola.paymentMode === 'APD') {
+    console.warn('  ⚠️  CHOLA_PAYMENT_MODE=APD — the website\'s PolicyGeneration issues from NovaCred\'s');
+    console.warn('     Advance Premium Deposit with Chola: no payment page, the deposit is debited.');
+    if (config.env === 'production') {
+      console.error('  ❌ APD is UAT-only and is REFUSED when NODE_ENV=production — every PolicyGeneration');
+      console.error('     will answer 503 until CHOLA_PAYMENT_MODE is changed.');
+    }
+  } else if (!config.chola.publicUrlBase) {
+    console.warn('  ⚠️  CHOLA_PUBLIC_URL_BASE is not set. Chola return the hosted payment page on their');
+    console.warn('     INTERNAL address (http://10.105.63.69 on UAT); it is passed through unchanged.');
+  }
+  if (ckycMissing.length > 0) {
+    console.warn(`  ⚠️  CKYC not configured — missing ${ckycMissing.join(', ')}. /chola-ms CKYC routes will fail.`);
   }
   if (missing.length > 0) {
     console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);

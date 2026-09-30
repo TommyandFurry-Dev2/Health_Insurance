@@ -28,6 +28,7 @@ import {
   ITGI_DEFAULTS as IT,
   FG_DEFAULTS as FG,
   ICICI_DEFAULTS as IL,
+  CHOLA_DEFAULTS as CH,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -681,6 +682,99 @@ const config = {
       || APP_DEFAULTS.corsOrigins,
   },
 
+  // ── Chola MS (Cholamandalam MS General Insurance) — Health ─────────────────
+  //
+  // Configured the IFFCO Tokio / Future Generali / ICICI way: every
+  // environment-dependent value is read from the environment ONLY, with no
+  // bundled host, client id/secret, intermediary code or CKYC key anywhere in
+  // this codebase (see the Chola note in defaults.js). So:
+  //
+  //   * UAT    → CHOLA_BASE_URL=https://developeruat.cholainsurance.com + the UAT
+  //              client credentials and intermediary code
+  //   * PROD   → the production host and credentials Chola issue
+  //   * unset  → the /chola-ms endpoints answer 503 naming what is missing, and
+  //              every other insurer is unaffected
+  //
+  // The variable NAMES are the working implementation's own (CHOLA_*), so its
+  // .env block moves across unchanged.
+  chola: {
+    // Dumps the full upstream request/response of every Chola call to stdout.
+    // Off unless set: ProposalSave and CKYC bodies carry names, DOBs, PAN,
+    // Aadhaar and bank details. Failures are logged regardless.
+    debug: process.env.CHOLA_DEBUG === '1',
+
+    // The product API host (Chola's WSO2 gateway). The token call and every
+    // product operation append their own path to it.
+    baseUrl: trimTrailingSlash(requiredEnv('CHOLA_BASE_URL')),
+
+    // OAuth2 client_credentials pair, sent as HTTP Basic on the token call.
+    clientId: requiredEnv('CHOLA_CLIENT_ID'),
+    clientSecret: requiredEnv('CHOLA_CLIENT_SECRET'),
+
+    // Injected into every quote/proposal/policy body that does not carry one.
+    // Partner identity issued by Chola, so it has no bundled default.
+    intermediaryCode: requiredEnv('CHOLA_INTERMEDIARY_CODE'),
+
+    // Super Topup's ProposalSave is served from a different (Portal .svc) host,
+    // as an absolute URL. Only that one call needs it; unset, it answers a named
+    // CONFIG_ERROR and every other operation is unaffected.
+    topupProposalUrl: requiredEnv('CHOLA_TOPUP_PROPOSAL_URL') || null,
+
+    // Chola answer PolicyGeneration (PayMode "Chola") and PolicySchedule with
+    // links on their own INTERNAL address — on UAT both come back on
+    // http://10.105.63.69, which no browser outside their network can resolve.
+    // Setting this rewrites the scheme/host of those links only, leaving path
+    // and query untouched.
+    //
+    // Deliberately unset by default: passing the link through unchanged lets
+    // the caller see the real host and say so, which is better than handing a
+    // buyer a link that silently fails to load.
+    publicUrlBase: requiredEnv('CHOLA_PUBLIC_URL_BASE') || '',
+
+    // How the BACKEND tags payment when it builds PolicyGeneration itself (the
+    // ops route and scripts/uat-chola-apd.js — see
+    // services/cholaPolicyIssuer.service.js): PG_CHOLA | PG_DIRECT | APD. The
+    // website sends its own PG request, except under APD, where its route issues
+    // through the backend too. APD is refused when NODE_ENV=production.
+    paymentMode: String(envOr('CHOLA_PAYMENT_MODE', CH.paymentMode)).trim().toUpperCase(),
+
+    // Shared secret for /chola-ms/ops/* (X-Ops-Key header). Unset = those
+    // routes are switched off, not open.
+    opsKey: requiredEnv('CHOLA_OPS_KEY') || '',
+
+    tokenSkewSeconds: numberEnvOr('CHOLA_TOKEN_SKEW_SECONDS', CH.tokenSkewSeconds),
+    maxRetries: numberEnvOr('CHOLA_MAX_RETRIES', CH.maxRetries),
+    retryBaseDelayMs: numberEnvOr('CHOLA_RETRY_BASE_DELAY_MS', CH.retryBaseDelayMs),
+
+    // Request paths appended to the base URLs. The API contract, identical in
+    // UAT and production — overridable only so a Chola-side path change stays a
+    // .env edit.
+    paths: {
+      token: envOr('CHOLA_TOKEN_PATH', CH.paths.token),
+      product: envOr('CHOLA_PRODUCT_PATH', CH.paths.product),
+      ckycAuth: envOr('CHOLA_CKYC_AUTH_PATH', CH.paths.ckycAuth),
+      ckycVerify: envOr('CHOLA_CKYC_VERIFY_PATH', CH.paths.ckycVerify),
+      ckycQuery: envOr('CHOLA_CKYC_QUERY_PATH', CH.paths.ckycQuery),
+    },
+
+    // CKYC lives on a separate e-policy portal with its own auth: a PrivateKey
+    // (+ optional UserID) exchanged for a TokenKey header.
+    ckyc: {
+      baseUrl: trimTrailingSlash(requiredEnv('CHOLA_CKYC_BASE_URL')) || null,
+      privateKey: requiredEnv('CHOLA_CKYC_PRIVATE_KEY') || null,
+      userId: requiredEnv('CHOLA_CKYC_USER_ID') || '',
+    },
+
+    jsonBodyLimit: envOr('CHOLA_JSON_BODY_LIMIT', CH.jsonBodyLimit),
+
+    // Falls back to the NivaBupa/global list so one origin allow-list covers the
+    // whole service; set CHOLA_CORS_ORIGINS only to diverge from it.
+    corsOrigins: process.env.CHOLA_CORS_ORIGINS
+      || process.env.NIVABUPA_CORS_ORIGINS
+      || process.env.CORS_ORIGINS
+      || APP_DEFAULTS.corsOrigins,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),
@@ -693,6 +787,8 @@ const config = {
     fgCkyc: numberEnvOr('FG_CKYC_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgCkyc),
     fgPdf: numberEnvOr('FG_PDF_TIMEOUT_MS', TIMEOUT_DEFAULTS.fgPdf),
     icici: numberEnvOr('EL_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.icici),
+    chola: numberEnvOr('CHOLA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.chola),
+    cholaPolicyGeneration: numberEnvOr('CHOLA_POLICY_GENERATION_TIMEOUT_MS', TIMEOUT_DEFAULTS.cholaPolicyGeneration),
   },
 };
 
@@ -812,6 +908,38 @@ export function missingIciciVariables() {
 // configuration, which is a mistake worth warning about at boot.
 export function iciciIsUnconfigured() {
   return !config.icici.baseUrl && !config.icici.login && !config.icici.password;
+}
+
+// The variables without which no Chola MS product call can be made, by name —
+// the working implementation's missingConfigFor('chola'), unchanged.
+//
+// One definition, three readers: config/validate.js reports them at boot,
+// services/cholaApi.service.js refuses the call at request time, and
+// GET /chola-ms/config/test answers with them. Names only, never values.
+export function missingCholaVariables() {
+  const missing = [];
+  if (!config.chola.baseUrl) missing.push('CHOLA_BASE_URL');
+  if (!config.chola.clientId) missing.push('CHOLA_CLIENT_ID');
+  if (!config.chola.clientSecret) missing.push('CHOLA_CLIENT_SECRET');
+  if (!config.chola.intermediaryCode) missing.push('CHOLA_INTERMEDIARY_CODE');
+  return missing;
+}
+
+// True when none of the connection variables are set — a deployment that was
+// simply never given Chola credentials. Distinguished from a PARTIAL
+// configuration, which is a mistake worth warning about at boot.
+export function cholaIsUnconfigured() {
+  return !config.chola.baseUrl && !config.chola.clientId && !config.chola.clientSecret;
+}
+
+// What the CKYC leg additionally needs. Separate from missingCholaVariables()
+// because it is a different portal with different credentials, and the legs
+// fail independently: quoting works with no CKYC key at all.
+export function missingCholaCkycVariables() {
+  const missing = [];
+  if (!config.chola.ckyc.baseUrl) missing.push('CHOLA_CKYC_BASE_URL');
+  if (!config.chola.ckyc.privateKey) missing.push('CHOLA_CKYC_PRIVATE_KEY');
+  return missing;
 }
 
 // Names only — never values. Consumed by config/validate.js.

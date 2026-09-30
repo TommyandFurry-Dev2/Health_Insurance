@@ -16,7 +16,8 @@ import helmet from 'helmet';
 
 import config from './config/env.js';
 import {
-  createNivabupaRouter, createItgiRouter, createFgRouter, createIciciRouter, createNivabupaProbeRouter,
+  createNivabupaRouter, createItgiRouter, createFgRouter, createIciciRouter, createCholaRouter,
+  createNivabupaProbeRouter,
 } from './index.js';
 
 export function createApp() {
@@ -101,6 +102,22 @@ export function createApp() {
   app.use(iciciRouter);
   if (config.aliasPrefix) {
     app.use(config.aliasPrefix, iciciRouter);
+  }
+
+  // Chola MS, mounted the same way and under the same alias, for ICICI's reason:
+  // the deployed frontend reaches this backend through /health (the Apache in
+  // front of the host proxies only that prefix), so
+  // https://<host>/health/chola-ms/quote is the URL a deployed build calls.
+  // There is no Chola payment callback to keep reachable — Chola's hosted page
+  // returns the buyer to the SPA directly.
+  //
+  // Both mounts of the same router instance are safe for the same reason the
+  // others are: every route and every piece of middleware inside it is scoped
+  // to /chola-ms.
+  const cholaRouter = createCholaRouter();
+  app.use(cholaRouter);
+  if (config.aliasPrefix) {
+    app.use(config.aliasPrefix, cholaRouter);
   }
 
   // GET /healthz, GET /readyz — outside the /nivabupa prefix so a load balancer
