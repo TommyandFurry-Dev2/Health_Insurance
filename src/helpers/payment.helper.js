@@ -54,15 +54,24 @@ function parseReturnMessage(decrypted) {
   };
 }
 
-// User-facing message only — kept generic on purpose so we never put a raw
-// axios/SOAP exception string in a redirect URL the buyer's browser carries
-// around. The real exception (message, response body, stack) always goes to
-// the server log, which is where debugging happens.
+// Caps the exact error carried in the redirect. A WAF block answers with a full
+// HTML page, and the whole message is URL-encoded into the return page's query
+// string — uncapped, it can exceed the frontend server's request-line limit and
+// the buyer gets a 414 instead of the error.
+const CALLBACK_ERROR_DETAIL_MAX = 700;
+
+// Shows the exact failure on the return page rather than a generic message, so a
+// UAT decResp failure can be diagnosed from the page itself: error.message starts
+// with the HTTP status and carries Niva Bupa's response body (SOAP Fault / WAF
+// page), and soapCause names which failure mode that is (see soap.service.js).
+// Neither contains the EncryptionKey or the ciphertext — the request XML is never
+// put on the error. The full exception and stack still go to the server log.
 function buildSafeCallbackErrorMessage(error) {
-  if (error.soapStatus || error.response) {
-    return 'We could not confirm your payment status with Niva Bupa right now. If an amount was debited, please contact support with your payment reference.';
-  }
-  return 'We could not process your payment confirmation right now. If an amount was debited, please contact support.';
+  const message = String(error.message || 'Unknown error').replace(/\s+/g, ' ').trim();
+  const detail = message.length > CALLBACK_ERROR_DETAIL_MAX
+    ? `${message.slice(0, CALLBACK_ERROR_DETAIL_MAX)}…`
+    : message;
+  return error.soapCause ? `${detail} | Cause: ${error.soapCause}` : detail;
 }
 
 export {
