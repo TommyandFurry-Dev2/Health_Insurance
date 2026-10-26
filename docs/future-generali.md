@@ -339,6 +339,23 @@ samples send the code; every plain-English instance belongs to Varishta Bima or
 the shared Postman collection, neither implemented here. So codes go on the wire,
 and plain English is normalised rather than refused.
 
+### Health Absolute underwriting rules
+
+FG test a portal against the "UW Validation Secnarios" sheet of `Field Masters
+for Health Absolute.xlsx`. Where their service prices or accepts what that sheet
+forbids, `helpers/fgUnderwriting.helper.js` refuses it before the round trip —
+on the quote **and** the proposal:
+
+| Row | Rule | How |
+| --- | --- | --- |
+| 10, 11 | Smoking / Tobacco "Yes" → automatic 5% loading | **FG apply it** from `<Smoking>` / `<Tobacco>` on the quote (UAT 2026-10-26: ₹11,043 → ₹11,595.15 for either, ₹12,147.30 for both). Here the flags are only normalised to `Y`/`N`; anything else is refused. The SPA re-quotes with the buyer's answers, so the loaded premium is the one proposed and paid. |
+| 15–20 | Existing FHA policy, good health, illness/hospitalisation, accident, surgery, declined policy | A stopping answer is refused (`isExistingAbsolutePolicy: Y`, `isGoodHealth: N`, or `Y` in `member.declarations.{illness, accident, surgery, declinedPolicy}`). Only the first two have elements; `declarations` is checked and never sent. |
+| 22 | Surat: floater (`HAF`) sum insured ≥ ₹10L, individual ≥ ₹5L | Refused by the proposer's pincode. **FG do not hold it** — UAT priced a ₹5L Surat floater on 2026-10-26. Surat = the 123 pincodes the workbook's pincode sheet places in that district (`FG_SURAT_PINCODES`). |
+
+Nothing is required: a caller that does not send the answers gets the builder's
+defaults, exactly as before. Vadodara (row 23) is ₹5L for both, which is FG's
+own national minimum.
+
 ### The client handshake
 
 For a customer FG have not seen before, the **first** CRT call creates the
@@ -466,6 +483,8 @@ travels on every request, so moving this service is purely a `.env` change.
 | `Fail_Ex` on a proposal | An empty `<Receipt><Amount>`. Pass the quoted premium. It reads like a `<ClientID>` fault and is not one. |
 | `BMI is Invalid for Member N` | Height/weight missing, zero, or in the wrong unit. cm and kg. |
 | `Occupation is incorrect.` | `occupation` is one of FG's four-letter codes, not free text. |
+| `FG_VALIDATION_ERROR` naming Surat | A Surat floater below ₹10L. FG would price it; their underwriting sheet does not allow it. |
+| `FG_VALIDATION_ERROR` naming "UW Validation Scenarios, row N" | A health declaration answered the way FG's sheet stops on. Not an integration fault. |
 | `PAN Number already exists for different client.` | A data collision on the shared UAT tenant, not an integration fault. Use a fresh PAN. |
 | Payment callback always `unverified` | `FG_PG_CRYPTO_KEY` is truncated by an unquoted `#`. Quote it. Startup now refuses to boot on this. |
 | `FG_PAYMENT_UNVERIFIED` | FG did not confirm the transaction, or confirmed a different amount. Either the payment failed or the callback was tampered with — do not issue manually without checking FG. |
@@ -499,6 +518,7 @@ src/helpers/fg.helper.js           typed errors, SOAP envelope, response parsers
 src/helpers/fgXml.helper.js        the <Root> payload builder — a transcription, not a design
 src/helpers/fgPayment.helper.js    CheckSum, DES decryption, the callback parser
 src/helpers/fgCodes.helper.js      local validation of FG's coded fields
+src/helpers/fgUnderwriting.helper.js  Health Absolute UW rules FG do not enforce (Surat floor, declarations)
 src/services/fgApi.service.js      SOAP transport, quote / proposal / issuance, the client handshake
 src/services/fgCkyc.service.js     GC-CKYC 3.0.0 and legacy NL-CKYC behind one interface
 src/services/fgPayment.service.js  session, callback, at-most-once issuance, result store

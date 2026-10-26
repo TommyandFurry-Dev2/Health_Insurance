@@ -523,6 +523,50 @@ const HEIGHT_CM = { min: 30, max: 275 };
 const WEIGHT_KG = { min: 2, max: 500 };
 const BMI_PLAUSIBLE = { min: 5, max: 100 };
 
+// ── Sum-insured floors by location ──────────────────────────────────────────
+//
+// Rows 22 and 23 of the "UW Validation Secnarios" sheet in "Field Masters for
+// Health Absolute.xlsx":
+//
+//   Surat    — "Minimum 5 lakhs for individual and 10 Lakhs for floater plan"
+//   Vadodara — "Minimum 5 lakhs for individual and 5 Lakhs for floater plan"
+//
+// Vadodara's floor is FG's national minimum, which FG enforce themselves ("The
+// minimum sum insured shall be 500000"), so only Surat needs a row here.
+//
+// FG do NOT hold Surat's floater floor on their side: on UAT 2026-10-26 a
+// two-member HAF quote at 500000 for pincode 395007 priced normally (₹16,433),
+// and FG's own testing then flagged that quote as incorrect. So the floor is
+// ours to hold — see helpers/fgUnderwriting.helper.js.
+//
+// "Surat" means the pincode's DistrictName in the "Pincode, City, State" sheet
+// of the same workbook. GENERATED from that sheet (123 pincodes), not
+// transcribed; regenerate it when FG issue a new workbook. A pincode their master
+// does not place in Surat is not caught.
+const FG_SURAT_PINCODES = new Set([
+  '364250', '364365', '383306', '384155', '385040', '385560', '386540', '389120',
+  '393122', '393340', '394101', '394105', '394107', '394110', '394114', '394120',
+  '394125', '394130', '394135', '394140', '394150', '394155', '394160', '394163',
+  '394170', '394180', '394185', '394190', '394210', '394215', '394220', '394221',
+  '394230', '394235', '394240', '394241', '394242', '394243', '394244', '394245',
+  '394246', '394248', '394250', '394270', '394296', '394305', '394310', '394315',
+  '394317', '394320', '394325', '394326', '394327', '394330', '394335', '394340',
+  '394345', '394350', '394352', '394355', '394360', '394363', '394364', '394365',
+  '394370', '394375', '394378', '394380', '394405', '394410', '394421', '394430',
+  '394440', '394445', '394450', '394515', '394516', '394518', '394520', '394530',
+  '394540', '394545', '394550', '394601', '394620', '394626', '394630', '394631',
+  '394632', '394633', '394635', '394640', '394641', '394650', '394651', '394655',
+  '394660', '394664', '394670', '394680', '394690', '394691', '394695', '394737',
+  '394835', '394975', '395001', '395002', '395003', '395004', '395005', '395006',
+  '395007', '395008', '395009', '395010', '395017', '395018', '395023', '396157',
+  '396510', '396526', '399003',
+]);
+
+// `individual` applies to HAI (including multi-individual), `floater` to HAF.
+const FG_SI_FLOORS_BY_LOCATION = [
+  { location: 'Surat', pincodes: FG_SURAT_PINCODES, individual: 500000, floater: 1000000 },
+];
+
 export {
   SOAP_OP,
   METHOD,
@@ -559,4 +603,6 @@ export {
   HEIGHT_CM,
   WEIGHT_KG,
   BMI_PLAUSIBLE,
+  FG_SURAT_PINCODES,
+  FG_SI_FLOORS_BY_LOCATION,
 };

@@ -11,6 +11,7 @@ import {
 } from '../helpers/fg.helper.js';
 import { buildRootXml, genUid } from '../helpers/fgXml.helper.js';
 import { validateCodedFields } from '../helpers/fgCodes.helper.js';
+import { validateUnderwriting } from '../helpers/fgUnderwriting.helper.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport for Future Generali's TCS "BO" SOAP service, plus the three
@@ -272,7 +273,10 @@ async function callFg({ operation, product, innerXml, timeoutMs = null, maxRetri
 async function getQuote(input = {}) {
   assertConfigured();
   const productDef = resolveProduct(input.product);
-  const innerXml = buildRootXml({ ...input, method: METHOD.ENQUIRY, productDef });
+  // Before the round trip: FG price a Surat floater below its floor, and the
+  // Smoking/Tobacco flags move the premium (helpers/fgUnderwriting.helper.js).
+  const checked = validateUnderwriting(input, productDef);
+  const innerXml = buildRootXml({ ...checked, method: METHOD.ENQUIRY, productDef });
 
   const { inner, exchange, httpStatus } = await callFg({
     operation: SOAP_OP.CREATE_POLICY,
@@ -307,7 +311,10 @@ async function crtCall(operation, productDef, rawInput, { timeoutMs = null, maxR
   // so enforcing it there would break quoting to fix proposals. That is also
   // why the failure lands here rather than earlier: this is the first request
   // whose outcome actually depends on the codes.
-  const input = validateCodedFields(rawInput, METHOD.CREATE);
+  //
+  // Health Absolute's underwriting rules run here too — the same Surat floor as
+  // the quote, plus the health declarations that stop a proposal.
+  const input = validateUnderwriting(validateCodedFields(rawInput, METHOD.CREATE), productDef);
 
   // UAT test switch — see config.fg.suppressClientIdOnCrt. OFF: this behaves
   // exactly as FG document. ON: <ClientID> is left EMPTY on every attempt,
