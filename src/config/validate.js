@@ -103,6 +103,21 @@ function looksLikeUat(value) {
   return typeof value === 'string' && /uat|staging|localhost|127\.0\.0\.1/i.test(value);
 }
 
+// A plain-http returnPath on a public host is what broke Niva Bupa callbacks on
+// UAT (2026-10-14): the Apache in front answers http with a 301 to https, and a
+// browser follows a 301 by re-sending the gateway's form POST as a GET with no
+// body. The encrypted returnMessage is gone before this process sees anything,
+// and the buyer lands on "Route not found: GET /nivabupa/payment/return".
+// http is fine only on a local host, where nothing sits in front to redirect.
+function insecurePublicReturnUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate configuration and print the boot report.
  *
@@ -444,6 +459,20 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
     if (strict) fatal.push(...itgiMissing);
   }
 
+  // Warned, not fatal: a buyer whose browser already holds this host's HSTS
+  // entry upgrades the http POST internally and still gets through, so refusing
+  // to boot would stop payments that partly work. STRICT_ENV=1 makes it fatal.
+  if (insecurePublicReturnUrl(config.nivabupa.payment.returnUrl)) {
+    console.warn('  ⚠️  NIVABUPA_PAYMENT_RETURN_URL is plain http on a public host:');
+    console.warn(`       ${config.nivabupa.payment.returnUrl}`);
+    console.warn('       If anything in front of this process redirects http to https, browsers');
+    console.warn('       re-send Niva Bupa\'s payment POST as a GET without the payment response,');
+    console.warn('       and the buyer sees "Route not found: GET /nivabupa/payment/return".');
+    console.warn('       Use https://.');
+    console.warn('');
+    if (strict) fatal.push('NIVABUPA_PAYMENT_RETURN_URL');
+  }
+
   if (missing.length > 0) {
     console.warn('  ⚠️  Missing required variables:');
     for (const entry of missing) {
@@ -538,4 +567,4 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   };
 }
 
-export { describeSecret, describeUrl };
+export { describeSecret, describeUrl, insecurePublicReturnUrl };

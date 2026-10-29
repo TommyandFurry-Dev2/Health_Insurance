@@ -22,7 +22,7 @@
 import http from 'node:http';
 
 import config from '../src/config/env.js';
-import { validateConfig } from '../src/config/validate.js';
+import { validateConfig, insecurePublicReturnUrl } from '../src/config/validate.js';
 import { createApp } from '../src/app.js';
 import db from '../src/db/index.js';
 
@@ -372,6 +372,24 @@ check('returnPath in the querystring is the configured callback URL', () => {
   const qs = buildPaymentQuerystring(body);
   assert(qs.includes(`returnPath=${config.nivabupa.payment.returnUrl}`),
     'returnPath does not match config.nivabupa.payment.returnUrl');
+  return config.nivabupa.payment.returnUrl;
+});
+
+check('a plain-http returnPath is flagged on a public host, not on a local one', () => {
+  // The exact value UAT was running with on 2026-10-14.
+  assert(insecurePublicReturnUrl('http://healthinsurance.tommyandfurry.com/nivabupa/payment/return'),
+    'public http returnPath not flagged');
+  assert(!insecurePublicReturnUrl('https://healthinsurance.tommyandfurry.com/nivabupa/payment/return'),
+    'https returnPath wrongly flagged');
+  assert(!insecurePublicReturnUrl('http://localhost:4000/nivabupa/payment/return'), 'localhost wrongly flagged');
+  assert(!insecurePublicReturnUrl('http://127.0.0.1:4000/nivabupa/payment/return'), '127.0.0.1 wrongly flagged');
+});
+
+check('the configured returnPath survives an http→https redirect', () => {
+  // A 301 in front turns Niva Bupa's form POST into a bodiless GET, so a public
+  // http returnPath loses the payment response before this process sees it.
+  assert(!insecurePublicReturnUrl(config.nivabupa.payment.returnUrl),
+    `NIVABUPA_PAYMENT_RETURN_URL is plain http on a public host (${config.nivabupa.payment.returnUrl}) — use https://`);
   return config.nivabupa.payment.returnUrl;
 });
 
