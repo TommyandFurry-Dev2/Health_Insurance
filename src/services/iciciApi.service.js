@@ -1,4 +1,7 @@
-import config, { missingIciciVariables } from '../config/env.js';
+import config, {
+  missingIciciVariables, iciciProfile, iciciVariable, iciciEnvironmentRefusal, ICICI_PATH_VARIABLES,
+} from '../config/env.js';
+import { currentIciciEnvironment } from '../helpers/iciciEnvironment.helper.js';
 import { requestIcici, isMultipart } from './iciciHttp.service.js';
 import { getIciciToken } from './iciciAuth.service.js';
 import { forAudit } from '../utils/sanitize.js';
@@ -45,21 +48,39 @@ import {
  * insurer — only the /icici-lombard endpoints answer 503.
  */
 function assertConfigured() {
-  const missing = missingIciciVariables();
+  const environment = currentIciciEnvironment();
+  const missing = missingIciciVariables(environment);
   if (missing.length) {
     throw configError(`Elevate is not configured. Missing: ${missing.join(', ')}`, { details: { missing } });
   }
 }
 
-/** `{ url, method }` for a named operation — the only place an ICICI URL is built. */
+/**
+ * `{ url, method }` for a named operation — the only place an ICICI URL is
+ * built. The host, path and client name come from the request's ICICI
+ * environment (UAT unless the request was routed to production).
+ */
 function endpointFor(operation, params = {}) {
   const op = ICICI_OPERATIONS[operation];
   if (!op) throw configError(`Unknown Elevate operation "${operation}"`);
-  if (!config.icici.baseUrl) throw configError('EL_BASE_URL is not set');
-  const path = config.icici.paths[op.pathKey]
-    .replace('{clientname}', encodeURIComponent(params.clientname || config.icici.clientName || ''))
-    .replace('{transactionId}', encodeURIComponent(params.transactionId || ''));
-  return { url: `${config.icici.baseUrl}${path}`, method: op.method };
+  const environment = currentIciciEnvironment();
+  const profile = iciciProfile(environment);
+  const refusal = iciciEnvironmentRefusal(environment);
+  if (refusal) throw configError(refusal);
+  if (!profile.baseUrl) throw configError(`${iciciVariable('EL_BASE_URL', environment)} is not set`);
+  // Production has no default paths: one ICICI have not issued (EMI, so far)
+  // is refused for that operation alone rather than borrowed from UAT.
+  const template = profile.paths[op.pathKey];
+  if (!template) {
+    const name = iciciVariable(ICICI_PATH_VARIABLES[op.pathKey], environment);
+    throw configError(`${name} is not set — no production path for Elevate ${operation}`, { details: { missing: [name] } });
+  }
+  const path = template
+    .replace('{clientname}', encodeURIComponent(params.clientname || profile.clientName || ''))
+    // ICICI's production sheet spells it {transaction_id}; both are accepted so
+    // the path can be copied from the sheet as written.
+    .replace(/\{transactionId\}|\{transaction_id\}/, encodeURIComponent(params.transactionId || ''));
+  return { url: `${profile.baseUrl}${path}`, method: op.method };
 }
 
 /**
@@ -104,6 +125,8 @@ function buildIciciExchange({ url, method, headers, body, attempts, response }) 
  */
 async function callIcici({ operation, body, params, headers, responseType, context }) {
   const { url, method } = endpointFor(operation, params);
+  // Production calls say so on every log line; UAT's lines are unchanged.
+  const ids = currentIciciEnvironment() === 'production' ? { env: 'production', ...context } : context;
   let sentHeaders = null;
 
   const send = async (token) => {
@@ -119,9 +142,11 @@ async function callIcici({ operation, body, params, headers, responseType, conte
       url,
       headers: sentHeaders,
       data: method === 'GET' ? undefined : (body ?? {}),
-      maxRetries: config.icici.maxRetries,
+      // Proposal, payment sync and EMI payment are never retried — see
+      // ICICI_OPERATIONS for why.
+      maxRetries: ICICI_OPERATIONS[operation].retry === false ? 0 : config.icici.maxRetries,
       ...(responseType ? { responseType } : {}),
-      context,
+      context: ids,
     });
   };
 

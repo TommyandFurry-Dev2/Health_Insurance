@@ -17,6 +17,7 @@ import chola_routes from './chola.routes.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
+import { requireIciciClientEnvironment } from '../middleware/iciciClientEnvironment.js';
 
 // Every NivaBupa route lives under this one prefix, and so does every piece of
 // middleware below — nothing in this router runs for a path outside it. That
@@ -264,6 +265,10 @@ export function createFgRouter() {
 //     parser. No ICICI route expects a form body today.
 //   * no rate limiting — same policy as every other insurer router.
 //   * its own CORS list — EL_CORS_ORIGINS, falling back to the shared one.
+//   * the calling build picks the ICICI environment (X-App-Env): absent/uat →
+//     UAT ICICI as always, prod → production ICICI when enabled. The two SPAs
+//     share an origin, so CORS cannot do this. See
+//     middleware/iciciClientEnvironment.js.
 export function createIciciRouter() {
   const router = express.Router();
 
@@ -273,6 +278,7 @@ export function createIciciRouter() {
     express.json({ limit: config.icici.jsonBodyLimit }),
     express.urlencoded({ extended: false, limit: config.icici.jsonBodyLimit }),
     logRequest,
+    requireIciciClientEnvironment,
   );
 
   // The same optional journey resolution the other routers use, reused rather

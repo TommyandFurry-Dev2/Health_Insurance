@@ -91,6 +91,11 @@ const MOCK = `http://127.0.0.1:${mock.address().port}`;
 
 const TEST_AES_KEY = Buffer.from('0123456789abcdef', 'utf8').toString('base64');
 Object.assign(process.env, {
+  // The shared server's NODE_ENV. Production ICICI is a profile on it (section I).
+  NODE_ENV: 'uat',
+  // Off, and every EL_PROD_* blank, so a developer's own .env cannot leak a
+  // production host or credential into the suite; section I sets the profile.
+  EL_PRODUCTION_ENABLED: 'false',
   EL_BASE_URL: MOCK,
   EL_LOGIN: 'test-login-7f3a',
   EL_PASSWORD: 'test-password-9c2e',
@@ -117,6 +122,10 @@ for (const name of [
   'EL_TOKEN_PATH', 'EL_PREMIUM_PATH', 'EL_PROPOSAL_PATH', 'EL_POLICY_SYNC_PATH', 'EL_POLICY_STATUS_PATH',
   'EL_EMI_DUE_PATH', 'EL_EMI_PROCESS_PATH', 'EL_COI_PATH', 'EL_ZONE_PATH', 'EL_CKYC_PATH', 'EL_OVD_INITIATE_PATH',
 ]) {
+  process.env[name] = '';
+  process.env[name.replace(/^EL_/, 'EL_PROD_')] = '';
+}
+for (const name of ['EL_PROD_BASE_URL', 'EL_PROD_LOGIN', 'EL_PROD_PASSWORD', 'EL_PROD_AES_KEY', 'EL_PROD_CLIENT_NAME']) {
   process.env[name] = '';
 }
 
@@ -523,6 +532,48 @@ await test('an upstream that never answers → 504 TIMEOUT_ERROR', async () => {
   }
 });
 
+await test('proposal-payment is never retried — a 503 reaches ICICI once', async () => {
+  mockToken();
+  on('POST', '/health-fresh/elevate/generic/proposal-payment',
+    () => ({ status: 503, json: {} }),
+    () => ({ json: { TransactionId: BNC, ProposalId: 'SECOND-PROPOSAL', Success: true } }));
+  const res = await call('POST', `${BASE}/proposal`, PROPOSAL);
+  eq(res.status, 502, 'HTTP status');
+  eq(hits('POST', '/health-fresh/elevate/generic/proposal-payment').length, 1, 'upstream attempts');
+});
+
+await test('payment sync and EMI payment are never retried either', async () => {
+  mockToken();
+  on('POST', '/health-servicing/payment/generic/sync', () => ({ status: 503, json: {} }));
+  on('POST', '/health-servicing/emi/generic/process', () => ({ status: 504, json: {} }));
+  const sync = await call('POST', `${BASE}/issue`, {
+    RequestId: 'r1', TransactionId: BNC, PaymentDetails: [{ PaymentDate: '03-Oct-2024', PaymentTransactionId: 'x', Amount: 8641 }],
+  });
+  const emi = await call('POST', `${BASE}/emi/process`, {
+    RequestId: 'r1', TransactionId: BNC, InstallmentNo: 2, PaymentTransactionId: 'pay-2', EMIAmount: 2071,
+  });
+  eq([sync.status, emi.status], [502, 502], 'HTTP statuses');
+  eq(
+    [hits('POST', '/health-servicing/payment/generic/sync').length, hits('POST', '/health-servicing/emi/generic/process').length],
+    [1, 1],
+    'upstream attempts'
+  );
+});
+
+await test('a proposal that times out is not replayed — 504 after one attempt', async () => {
+  const saved = config.timeouts.icici;
+  config.timeouts.icici = 150;
+  try {
+    mockToken();
+    on('POST', '/health-fresh/elevate/generic/proposal-payment', () => ({ delayMs: 600, json: {} }));
+    const res = await call('POST', `${BASE}/proposal`, PROPOSAL);
+    eq([res.status, res.json.error.code], [504, 'TIMEOUT_ERROR'], 'status/code');
+    eq(hits('POST', '/health-fresh/elevate/generic/proposal-payment').length, 1, 'upstream attempts');
+  } finally {
+    config.timeouts.icici = saved;
+  }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 heading('D. Servicing: zone, EMI');
 
@@ -586,6 +637,19 @@ await test('COI that is neither PDF nor JSON → 502 PARSE_ERROR', async () => {
   const res = await call('GET', `${BASE}/coi/${BNC}`);
   eq(res.status, 502, 'HTTP status');
   eq(res.json.error.code, 'PARSE_ERROR', 'code');
+});
+
+await test('COI path takes ICICI\'s {transaction_id} spelling from the production sheet', async () => {
+  const saved = config.icici.paths.coi;
+  config.icici.paths.coi = '/generic/common/customer/finofinins/certificate/health/{transaction_id}';
+  try {
+    mockToken();
+    on('GET', `/generic/common/customer/finofinins/certificate/health/${BNC}`, () => ({ buffer: PDF }));
+    const res = await call('GET', `${BASE}/coi/${BNC}`);
+    eq([res.status, res.json.data.byteLength], [200, PDF.length], 'COI');
+  } finally {
+    config.icici.paths.coi = saved;
+  }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -812,6 +876,157 @@ await test('other insurers are still mounted and answering', async () => {
   return statuses.join(', ');
 });
 
+await test('a production build (X-App-Env: prod) is refused while production is not enabled, before ICICI', async () => {
+  const res = await call('POST', `${BASE}/quote`, QUOTE, { headers: { 'X-App-Env': 'prod' } });
+  eq([res.status, res.json.error.code, res.json.error.details], [403, 'ENVIRONMENT_MISMATCH', { declared: 'prod' }], 'refusal');
+  assert(/EL_PRODUCTION_ENABLED/.test(res.json.error.message), `message: ${res.json.error.message}`);
+  eq(received.length, 0, 'upstream requests');
+});
+
+await test('a UAT build — X-App-Env: uat, or no header at all — reaches UAT ICICI as before', async () => {
+  mockToken();
+  on('POST', '/health-fresh/elevate/generic/premium', () => ({ json: { TotalPremium: 1, TransactionId: BNC, Success: true } }));
+  const declared = await call('POST', `${BASE}/quote`, QUOTE, { headers: { 'X-App-Env': 'uat' } });
+  const silent = await call('POST', `${BASE}/quote`, QUOTE);
+  eq([declared.status, silent.status], [200, 200], 'HTTP statuses');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+heading('I. Production ICICI on the same server (X-App-Env: prod)');
+
+// The production profile, as ICICI issued its paths, pointed at the mock. The
+// mock answers on both UAT's and production's paths, so which one a call used
+// is visible in `received`. EMI has no production path, as in ICICI's sheet.
+const PROD_LOGIN = 'prod-login-5b1d';
+const PROD_PASSWORD = 'cHJvZC1wYXNzd29yZC04ZTRh';
+// Production's base URL is the mock under a prefix, so it differs from UAT's:
+// a production call built on UAT's base URL arrives without the prefix and
+// matches no production handler. (Both used to be MOCK, which is how a URL
+// built on the UAT base went unnoticed until the live check of 2026-10-31.)
+const PROD_HOST = '/prod-host';
+const PROD_PROFILE = {
+  enabled: true,
+  baseUrl: `${MOCK}${PROD_HOST}`,
+  login: PROD_LOGIN,
+  password: PROD_PASSWORD,
+  passwordPreEncrypted: true,
+  aesKey: null,
+  aesMode: 'aes-128-ecb',
+  aesIv: null,
+  clientName: 'finofinins',
+  paths: {
+    token: '/auth-api/v2/token',
+    premium: '/health-fresh/elevate/finofinins/premium',
+    proposal: '/health-fresh/elevate/finofinins/proposal-payment',
+    policySync: '/health-servicing/payment/finofinins/sync',
+    policyStatus: '/health-servicing/proposal/finofinins/status',
+    emiDue: null,
+    emiProcess: null,
+    coi: '/generic/common/customer/finofinins/certificate/health/{transaction_id}',
+    zone: '/generic/common/master/zone',
+    ckyc: '/generic/common/ckyc/finofinins/health/ckyc',
+    ovdInitiate: '/generic/common/ckyc/finofinins/health/ovdinitiate',
+  },
+};
+const PROD = { 'X-App-Env': 'prod' };
+
+async function withProduction(overrides, fn) {
+  const saved = config.iciciProduction;
+  config.iciciProduction = { ...PROD_PROFILE, ...overrides };
+  try {
+    return await fn();
+  } finally {
+    config.iciciProduction = saved;
+  }
+}
+
+await test('a production build and a UAT build on one server each reach their own ICICI, with their own token', () => withProduction({}, async () => {
+  mockToken();
+  on('POST', `${PROD_HOST}/auth-api/v2/token`, () => tokenOk());
+  on('POST', '/health-fresh/elevate/generic/premium', () => ({ json: { TotalPremium: 1, TransactionId: BNC, Success: true } }));
+  on('POST', `${PROD_HOST}/health-fresh/elevate/finofinins/premium`, () => ({ json: { TotalPremium: 7065, TransactionId: 'bnc_PROD', Success: true } }));
+  const prod = await call('POST', `/health${BASE}/quote`, QUOTE, { headers: PROD });
+  const uat = await call('POST', `/health${BASE}/quote`, QUOTE);
+  eq([prod.status, prod.json.data.transactionId, uat.status, uat.json.data.transactionId], [200, 'bnc_PROD', 200, BNC], 'quotes');
+  const [prodToken] = hits('POST', `${PROD_HOST}/auth-api/v2/token`);
+  const [uatToken] = hits('POST', '/auth-api/access/token');
+  eq([prodToken.json.Login, prodToken.json.Password, uatToken.json.Login], [PROD_LOGIN, PROD_PASSWORD, 'test-login-7f3a'], 'token logins');
+  const [prodQuote] = hits('POST', `${PROD_HOST}/health-fresh/elevate/finofinins/premium`);
+  const [uatQuote] = hits('POST', '/health-fresh/elevate/generic/premium');
+  assert(prodQuote.headers.authorization !== uatQuote.headers.authorization, 'one bearer token served both environments');
+  // Every request carrying the production token went to the production base URL.
+  const prodBearer = prodQuote.headers.authorization;
+  eq(received.filter((x) => x.headers.authorization === prodBearer && !x.path.startsWith(PROD_HOST)).length, 0, 'production token sent off the production host');
+  return 'prod → /auth-api/v2/token + …/finofinins/premium on its own host; UAT → /auth-api/access/token + …/generic/premium';
+}));
+
+await test('production zone master goes to the production host, never UAT\'s', () => withProduction({}, async () => {
+  on('POST', `${PROD_HOST}/auth-api/v2/token`, () => tokenOk());
+  on('POST', `${PROD_HOST}/generic/common/master/zone`, () => ({ json: { PinCode: '400069', Zone: 'Zone I', Success: true } }));
+  const res = await call('POST', `${BASE}/zone`, { PinCode: '400069', IssuanceSystem: 'Artemis', ProductCode: '4225' }, { headers: PROD });
+  eq([res.status, res.json.data.zone], [200, 'Zone I'], 'zone');
+  eq(received.map((x) => x.path), [`${PROD_HOST}/auth-api/v2/token`, `${PROD_HOST}/generic/common/master/zone`], 'requests');
+}));
+
+await test('production proposal, status, CKYC and certificate use the production paths', () => withProduction({}, async () => {
+  on('POST', `${PROD_HOST}/auth-api/v2/token`, () => tokenOk());
+  on('POST', `${PROD_HOST}/health-fresh/elevate/finofinins/proposal-payment`, () => ({ json: { TransactionId: BNC, ProposalId: 'P1', PaymentUrl: 'https://pay/p', Success: true } }));
+  on('POST', `${PROD_HOST}/health-servicing/proposal/finofinins/status`, () => ({ json: { TransactionId: BNC, ProposalStatus: 'NC', PaymentStatus: 'Paid', Success: true } }));
+  on('POST', `${PROD_HOST}/generic/common/ckyc/finofinins/health/ckyc`, () => ({ json: { isKycSuccess: true, KycID: 'kyc_1', Success: true } }));
+  on('GET', `${PROD_HOST}/generic/common/customer/finofinins/certificate/health/${BNC}`, () => ({ buffer: PDF }));
+  const statuses = [
+    (await call('POST', `${BASE}/proposal`, PROPOSAL, { headers: PROD })).status,
+    (await call('POST', `${BASE}/policy/status`, { TransactionId: BNC, RequestId: 'r' }, { headers: PROD })).status,
+    (await call('POST', `${BASE}/ckyc`, { transactionId: BNC, dateOfBirth: '10-Oct-1989', panNumber: 'ABCDE1234F' }, { headers: PROD })).status,
+    (await call('GET', `${BASE}/coi/${BNC}`, undefined, { headers: PROD })).status,
+  ];
+  eq(statuses, [200, 200, 200, 200], 'statuses');
+  eq(received.filter((x) => !x.path.startsWith(PROD_HOST)).length, 0, 'requests that missed the production host');
+}));
+
+await test('EMI has no production path → 503 naming EL_PROD_EMI_DUE_PATH; nothing sent to ICICI', () => withProduction({}, async () => {
+  const res = await call('POST', `${BASE}/emi/due`, { RequestId: 'r1', TransactionId: BNC }, { headers: PROD });
+  eq([res.status, res.json.error.code, res.json.error.details], [503, 'CONFIG_ERROR', { missing: ['EL_PROD_EMI_DUE_PATH'] }], 'refusal');
+  eq(received.length, 0, 'upstream requests');
+}));
+
+await test('production switched off → a production build is refused, never served from UAT', () => withProduction({ enabled: false }, async () => {
+  const res = await call('POST', `${BASE}/quote`, QUOTE, { headers: PROD });
+  eq([res.status, res.json.error.code], [403, 'ENVIRONMENT_MISMATCH'], 'refusal');
+  eq(received.length, 0, 'upstream requests');
+}));
+
+await test('EL_PROD_BASE_URL on ICICI\'s UAT host → production builds refused', () => withProduction({ baseUrl: 'https://ilesbapigee.insurancearticlez.com' }, async () => {
+  const res = await call('POST', `${BASE}/quote`, QUOTE, { headers: PROD });
+  eq([res.status, res.json.error.code], [403, 'ENVIRONMENT_MISMATCH'], 'refusal');
+  eq(received.length, 0, 'upstream requests');
+}));
+
+await test('EL_BASE_URL "replaced" with the production host → UAT-build calls refused, not sent', async () => {
+  const saved = config.icici.baseUrl;
+  config.icici.baseUrl = 'https://janus.icicilombard.com';
+  try {
+    const res = await call('POST', `${BASE}/quote`, QUOTE);
+    eq([res.status, res.json.error.code], [503, 'CONFIG_ERROR'], 'refusal');
+    assert(/EL_PROD_BASE_URL/.test(res.json.error.message), `message: ${res.json.error.message}`);
+    eq(received.length, 0, 'upstream requests');
+  } finally {
+    config.icici.baseUrl = saved;
+  }
+});
+
+await test('an unknown X-App-Env is refused', async () => {
+  const res = await call('POST', `${BASE}/quote`, QUOTE, { headers: { 'X-App-Env': 'staging' } });
+  eq([res.status, res.json.error.code], [403, 'ENVIRONMENT_MISMATCH'], 'refusal');
+});
+
+await test('GET /config/test reports the production profile by name, without a value', () => withProduction({}, async () => {
+  const res = await call('GET', `${BASE}/config/test`);
+  const p = res.json.data.production;
+  eq([res.status, p.enabled, p.configured, p.pathsNotSet], [200, true, true, ['EL_PROD_EMI_DUE_PATH', 'EL_PROD_EMI_PROCESS_PATH']], 'production');
+  for (const secret of [PROD_LOGIN, PROD_PASSWORD]) assert(!res.body.includes(secret), 'config/test leaked a production value');
+}));
+
 // ═════════════════════════════════════════════════════════════════════════════
 heading('H. Logging never leaks credentials');
 
@@ -824,6 +1039,8 @@ await test('no password, encrypted password, login or token appears in any log l
     'EL_LOGIN': 'test-login-7f3a',
     'bearer token': 'jwt-secret-token',
     'EL_AES_KEY': TEST_AES_KEY,
+    'EL_PROD_LOGIN': PROD_LOGIN,
+    'EL_PROD_PASSWORD': PROD_PASSWORD,
   };
   for (const [what, value] of Object.entries(forbidden)) {
     assert(!all.includes(value), `${what} appeared in the logs`);
@@ -832,6 +1049,7 @@ await test('no password, encrypted password, login or token appears in any log l
   assert(all.includes(`transactionId=${BNC}`), 'the ICICI TransactionId is not being logged');
   return `${logged.length} log lines checked`;
 });
+
 
 // ── Summary ─────────────────────────────────────────────────────────────────
 

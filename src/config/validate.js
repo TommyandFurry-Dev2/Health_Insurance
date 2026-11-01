@@ -33,6 +33,9 @@ import config, {
   missingCholaVariables,
   cholaIsUnconfigured,
   missingCholaCkycVariables,
+  iciciProductionPathsNotSet,
+  iciciProductionIsUnconfigured,
+  iciciEnvironmentRefusal,
 } from './env.js';
 import { CHOLA_PAYMENT_MODES } from '../constants/chola.constants.js';
 
@@ -233,6 +236,45 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   }
   console.log('');
 
+  // ── ICICI Lombard PRODUCTION (same server, X-App-Env: prod only) ──
+  //
+  // Reported apart from UAT because it is served apart: only requests declaring
+  // X-App-Env: prod reach it, and only while EL_PRODUCTION_ENABLED is on. Never
+  // fatal — a production problem must not stop this shared server booting for
+  // the UAT SPA and every other insurer; the refusal happens per request.
+  const prod = config.iciciProduction;
+  const prodMissing = missingIciciVariables('production');
+  const prodPathsNotSet = iciciProductionPathsNotSet();
+  console.log('  ICICI Lombard PRODUCTION (this server; X-App-Env: prod only)');
+  if (!prod.enabled) {
+    console.log(`    off (EL_PRODUCTION_ENABLED) — production builds are refused${iciciProductionIsUnconfigured() ? '' : '; EL_PROD_* are set, ready to switch on'}`);
+  } else {
+    console.log('    base URL            :', describeUrl(prod.baseUrl));
+    console.log('    token path          :', prod.paths.token || 'not set');
+    console.log('    EL_PROD_LOGIN       :', describeSecret(prod.login));
+    console.log('    EL_PROD_PASSWORD    :', describeSecret(prod.password));
+    console.log('    password sent       :', prod.passwordPreEncrypted ? 'pre-encrypted (EL_PROD_PASSWORD_PRE_ENCRYPTED)' : `encrypted here with ${prod.aesMode}`);
+    console.log('    EL_PROD_CLIENT_NAME :', describeSecret(prod.clientName));
+  }
+  console.log('');
+  if (prod.enabled) {
+    if (prodMissing.length > 0) {
+      console.warn('  ⚠️  ICICI production is ON but missing:', prodMissing.join(', '));
+      console.warn('       Every production-build ICICI call will answer 503 until these are set.');
+      console.warn('');
+    }
+    if (prodPathsNotSet.length > 0) {
+      console.warn('  ⚠️  ICICI production paths not set — these operations answer 503 for production builds:');
+      console.warn(`       ${prodPathsNotSet.join(', ')}`);
+      console.warn('');
+    }
+    const prodRefusal = iciciEnvironmentRefusal('production');
+    if (prodRefusal) {
+      console.error(`  ❌ ${prodRefusal} Production-build ICICI calls are refused.`);
+      console.error('');
+    }
+  }
+
   // ── Chola MS ──
   //
   // Reported the ICICI way and for the same reason: no bundled fallbacks, so a
@@ -258,6 +300,9 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   console.log('');
 
   const fatal = [];
+
+  // Reported above with the production profile; fatal only under STRICT_ENV=1.
+  if (strict && prod.enabled && iciciEnvironmentRefusal('production')) fatal.push('EL_PROD_BASE_URL');
 
   if (!cholaIsUnconfigured()) {
     if (cholaMissing.length > 0) {
@@ -326,6 +371,21 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
       console.error(`       ${describeUrl(config.icici.baseUrl)}`);
       console.error('');
       fatal.push('EL_BASE_URL');
+    }
+    // The opposite accident, and the likelier one on this shared server: the
+    // UAT profile (EL_*) — the one the UAT SPA reaches — handed ICICI's
+    // PRODUCTION host, i.e. production "replacing" UAT in place. Every tester's
+    // journey would then run a real CKYC, raise a real proposal and take a real
+    // payment, so those calls are REFUSED at request time
+    // (iciciEnvironmentRefusal); production belongs in EL_PROD_*. Warned here
+    // rather than fatal, for the reason a partial config is: a boot failure
+    // would take every other insurer down with it. STRICT_ENV=1 makes it fatal.
+    const uatProfileRefusal = iciciEnvironmentRefusal('uat');
+    if (uatProfileRefusal) {
+      console.error(`  ❌ ${uatProfileRefusal}`);
+      console.error(`       ${describeUrl(config.icici.baseUrl)} — UAT-profile ICICI calls are refused.`);
+      console.error('');
+      if (strict) fatal.push('EL_BASE_URL');
     }
   }
 

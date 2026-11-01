@@ -1,4 +1,5 @@
-import config from '../config/env.js';
+import config, { iciciProfile, iciciVariable, iciciEnvironmentRefusal } from '../config/env.js';
+import { currentIciciEnvironment } from '../helpers/iciciEnvironment.helper.js';
 import { requestIcici } from './iciciHttp.service.js';
 import { encryptPassword, normalizeEncKey } from '../helpers/iciciCrypto.helper.js';
 import { authError, configError, safeJson } from '../helpers/icici.helper.js';
@@ -8,6 +9,7 @@ import { authError, configError, safeJson } from '../helpers/icici.helper.js';
 // ElevateAuthService, with its behaviour kept exactly:
 //
 //   POST {EL_BASE_URL}{EL_TOKEN_PATH}  { Login, Password }
+//        (UAT /auth-api/access/token, production /auth-api/v2/token)
 //     → { token, expiry, encKey, success, errorCode, errorMessage }
 //
 //   * cached with its expiry and reused until within EL_TOKEN_SKEW_SECONDS of
@@ -24,49 +26,55 @@ import { authError, configError, safeJson } from '../helpers/icici.helper.js';
 // Never logged: the token, the password, or the login. The expiry is.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const state = {
-  token: null,
-  encKey: null,
-  expiryMs: 0,
-  inflight: null,
-};
+// One cache per ICICI environment: a production token must never be sent to
+// UAT, nor a UAT one to production.
+const newState = () => ({ token: null, encKey: null, expiryMs: 0, inflight: null });
+const states = { uat: newState(), production: newState() };
+const stateFor = (environment) => states[environment] || states.uat;
 
-function isValid() {
+function isValid(state) {
   const skew = (config.icici.tokenSkewSeconds || 60) * 1000;
   return Boolean(state.token) && Date.now() < state.expiryMs - skew;
 }
 
-/** Return a valid bearer token, fetching or refreshing as needed. */
+/** Return a valid bearer token for the current ICICI environment, fetching or refreshing as needed. */
 async function getIciciToken({ force = false } = {}) {
-  if (!force && isValid()) return state.token;
+  const environment = currentIciciEnvironment();
+  const state = stateFor(environment);
+  if (!force && isValid(state)) return state.token;
   if (state.inflight) return state.inflight;
-  state.inflight = fetchToken().finally(() => { state.inflight = null; });
+  state.inflight = fetchToken(environment).finally(() => { state.inflight = null; });
   return state.inflight;
 }
 
 /** The RSA public key (PEM) from the most recent token response, if any. */
 function getIciciEncKey() {
-  return state.encKey;
+  return stateFor(currentIciciEnvironment()).encKey;
 }
 
-/** Forget the cached token. For tests and for an operator-driven rotation. */
+/** Forget the cached tokens. For tests and for an operator-driven rotation. */
 function resetIciciToken() {
-  state.token = null;
-  state.encKey = null;
-  state.expiryMs = 0;
-  state.inflight = null;
+  Object.assign(states.uat, newState());
+  Object.assign(states.production, newState());
 }
 
-function tokenEndpoint() {
-  return `${config.icici.baseUrl}${config.icici.paths.token}`;
+// Production's token path is not UAT's (/auth-api/v2/token against
+// /auth-api/access/token) and has no default, like every production path.
+function tokenEndpoint(environment = currentIciciEnvironment()) {
+  const profile = iciciProfile(environment);
+  const refusal = iciciEnvironmentRefusal(environment);
+  if (refusal) throw configError(refusal);
+  if (!profile.paths.token) throw configError(`${iciciVariable('EL_TOKEN_PATH', environment)} is not set`);
+  return `${profile.baseUrl}${profile.paths.token}`;
 }
 
-async function fetchToken() {
-  const cfg = config.icici;
-  if (!cfg.login) throw authError('EL_LOGIN is not set');
-  if (!cfg.baseUrl) throw configError('EL_BASE_URL is not set');
+async function fetchToken(environment) {
+  const cfg = iciciProfile(environment);
+  const state = stateFor(environment);
+  if (!cfg.login) throw authError(`${iciciVariable('EL_LOGIN', environment)} is not set`);
+  if (!cfg.baseUrl) throw configError(`${iciciVariable('EL_BASE_URL', environment)} is not set`);
 
-  const url = tokenEndpoint();
+  const url = tokenEndpoint(environment);
 
   // IL normally hand over the password already AES-encrypted — their auth
   // spec's Password field is "a valid encrypted password", i.e. the ciphertext
@@ -106,7 +114,10 @@ async function fetchToken() {
   // Prefer the server-provided expiry; fall back to 15 minutes.
   const exp = body.expiry ? Date.parse(body.expiry) : NaN;
   state.expiryMs = Number.isNaN(exp) ? Date.now() + 15 * 60 * 1000 : exp;
-  console.log(`[icici] obtained bearer token — expires ${body.expiry ?? '(not stated; assuming 15 minutes)'}`);
+  console.log(
+    `[icici] obtained ${environment === 'production' ? 'PRODUCTION ' : ''}bearer token — `
+    + `expires ${body.expiry ?? '(not stated; assuming 15 minutes)'}`
+  );
   return state.token;
 }
 

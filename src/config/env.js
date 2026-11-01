@@ -136,6 +136,23 @@ const localPort = numberEnvOr('PORT', APP_DEFAULTS.port);
 const frontendUrl = process.env.FRONTEND_URL
   || (isDevelopment ? APP_DEFAULTS.devFrontendUrl : APP_DEFAULTS.prodFrontendUrl);
 
+// Each ICICI path and the variable that sets it — one table for both profiles
+// (UAT EL_*_PATH, production EL_PROD_*_PATH), so a path and the variable named
+// when it is missing cannot disagree.
+export const ICICI_PATH_VARIABLES = {
+  token: 'EL_TOKEN_PATH',
+  premium: 'EL_PREMIUM_PATH',
+  proposal: 'EL_PROPOSAL_PATH',
+  policySync: 'EL_POLICY_SYNC_PATH',
+  policyStatus: 'EL_POLICY_STATUS_PATH',
+  emiDue: 'EL_EMI_DUE_PATH',
+  emiProcess: 'EL_EMI_PROCESS_PATH',
+  coi: 'EL_COI_PATH',
+  zone: 'EL_ZONE_PATH',
+  ckyc: 'EL_CKYC_PATH',
+  ovdInitiate: 'EL_OVD_INITIATE_PATH',
+};
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   isDevelopment,
@@ -656,21 +673,13 @@ const config = {
     maxRetries: numberEnvOr('EL_MAX_RETRIES', IL.maxRetries),
     retryBaseDelayMs: numberEnvOr('EL_RETRY_BASE_DELAY_MS', IL.retryBaseDelayMs),
 
-    // Request paths appended to baseUrl. The API contract, identical in UAT and
-    // production — overridable only so an IL-side path change stays a .env edit.
-    paths: {
-      token: envOr('EL_TOKEN_PATH', IL.paths.token),
-      premium: envOr('EL_PREMIUM_PATH', IL.paths.premium),
-      proposal: envOr('EL_PROPOSAL_PATH', IL.paths.proposal),
-      policySync: envOr('EL_POLICY_SYNC_PATH', IL.paths.policySync),
-      policyStatus: envOr('EL_POLICY_STATUS_PATH', IL.paths.policyStatus),
-      emiDue: envOr('EL_EMI_DUE_PATH', IL.paths.emiDue),
-      emiProcess: envOr('EL_EMI_PROCESS_PATH', IL.paths.emiProcess),
-      coi: envOr('EL_COI_PATH', IL.paths.coi),
-      zone: envOr('EL_ZONE_PATH', IL.paths.zone),
-      ckyc: envOr('EL_CKYC_PATH', IL.paths.ckyc),
-      ovdInitiate: envOr('EL_OVD_INITIATE_PATH', IL.paths.ovdInitiate),
-    },
+    // Request paths appended to baseUrl — UAT's, the kit's `generic` paths.
+    // Production's differ (/…/finofinins/…, /auth-api/v2/token) and live in
+    // iciciProduction below, never here. Overridable only so an IL-side UAT path
+    // change stays a .env edit.
+    paths: Object.fromEntries(
+      Object.entries(ICICI_PATH_VARIABLES).map(([key, name]) => [key, envOr(name, IL.paths[key])])
+    ),
 
     jsonBodyLimit: envOr('EL_JSON_BODY_LIMIT', IL.jsonBodyLimit),
 
@@ -680,6 +689,36 @@ const config = {
       || process.env.NIVABUPA_CORS_ORIGINS
       || process.env.CORS_ORIGINS
       || APP_DEFAULTS.corsOrigins,
+  },
+
+  // ── ICICI Lombard PRODUCTION — on this same backend ────────────────────────
+  //
+  // This one process serves the UAT SPA and the production SPA, so it holds both
+  // ICICI environments and picks one PER REQUEST
+  // (middleware/iciciClientEnvironment.js): a production build declares
+  // X-App-Env: prod and gets this profile; the UAT build declares nothing and
+  // keeps `icici` above, exactly as before. Off until EL_PRODUCTION_ENABLED=true.
+  //
+  // Connection values only — retries, timeouts, debug, CORS and the body limit
+  // are shared with UAT. The names mirror EL_* as EL_PROD_*, and NONE has a
+  // default: not the host, not the credential, not one path. An operation ICICI
+  // have not issued a production path for answers 503 rather than fall back to
+  // UAT's.
+  iciciProduction: {
+    enabled: boolEnvOr('EL_PRODUCTION_ENABLED', false),
+    baseUrl: trimTrailingSlash(requiredEnv('EL_PROD_BASE_URL')),
+    login: requiredEnv('EL_PROD_LOGIN'),
+    password: requiredEnv('EL_PROD_PASSWORD'),
+    // Not assumed to match UAT's: set it from what ICICI issued for production.
+    passwordPreEncrypted: boolEnvOr('EL_PROD_PASSWORD_PRE_ENCRYPTED', false),
+    aesKey: requiredEnv('EL_PROD_AES_KEY') || null,
+    aesMode: envOr('EL_PROD_AES_MODE', IL.aesMode),
+    aesIv: requiredEnv('EL_PROD_AES_IV') || null,
+    clientName: requiredEnv('EL_PROD_CLIENT_NAME') || null,
+    paths: Object.fromEntries(
+      Object.entries(ICICI_PATH_VARIABLES)
+        .map(([key, name]) => [key, requiredEnv(name.replace(/^EL_/, 'EL_PROD_')) || null])
+    ),
   },
 
   // ── Chola MS (Cholamandalam MS General Insurance) — Health ─────────────────
@@ -892,15 +931,71 @@ export function partialFgGcKycVariables() {
 // One definition, three readers: config/validate.js reports them at boot,
 // services/iciciApi.service.js refuses the call at request time, and
 // GET /icici-lombard/config/test answers with them. Names only, never values.
-export function missingIciciVariables() {
+//
+// `environment` is 'uat' (the EL_* profile, and the default — every caller
+// that names none gets exactly the answer it always got) or 'production'
+// (EL_PROD_*, which also needs its token path: it has no default).
+export function missingIciciVariables(environment = 'uat') {
+  const profile = iciciProfile(environment);
+  const name = (base) => iciciVariable(base, environment);
   const missing = [];
-  if (!config.icici.baseUrl) missing.push('EL_BASE_URL');
-  if (!config.icici.login) missing.push('EL_LOGIN');
-  if (!config.icici.password) missing.push('EL_PASSWORD');
+  if (!profile.baseUrl) missing.push(name('EL_BASE_URL'));
+  if (!profile.login) missing.push(name('EL_LOGIN'));
+  if (!profile.password) missing.push(name('EL_PASSWORD'));
   // Only needed to encrypt a plaintext password. When IL have supplied the
   // ciphertext directly there is nothing to encrypt and no key to require.
-  if (!config.icici.aesKey && !config.icici.passwordPreEncrypted) missing.push('EL_AES_KEY');
+  if (!profile.aesKey && !profile.passwordPreEncrypted) missing.push(name('EL_AES_KEY'));
+  // Every call needs a token. UAT's path always has its default.
+  if (!profile.paths.token) missing.push(name('EL_TOKEN_PATH'));
   return missing;
+}
+
+// The connection profile for an ICICI environment: 'uat' → config.icici,
+// 'production' → config.iciciProduction.
+export function iciciProfile(environment = 'uat') {
+  return environment === 'production' ? config.iciciProduction : config.icici;
+}
+
+// A variable's name in an environment: EL_BASE_URL → EL_PROD_BASE_URL for
+// production, unchanged for UAT. Names only, never values.
+export function iciciVariable(name, environment = 'uat') {
+  return environment === 'production' ? name.replace(/^EL_/, 'EL_PROD_') : name;
+}
+
+// Production paths not set, as variable names — the operations ICICI have not
+// issued a production path for (EMI, so far). Those answer 503.
+export function iciciProductionPathsNotSet() {
+  return Object.entries(ICICI_PATH_VARIABLES)
+    .filter(([key]) => !config.iciciProduction.paths[key])
+    .map(([, name]) => iciciVariable(name, 'production'));
+}
+
+// True when none of the production connection variables are set.
+export function iciciProductionIsUnconfigured() {
+  const p = config.iciciProduction;
+  return !p.baseUrl && !p.login && !p.password;
+}
+
+// Why an ICICI environment must not be used right now, or null.
+//
+// The hosts are checked against ICICI's own domains so neither profile can be
+// pointed at the other ICICI: the UAT profile is what the UAT SPA reaches, so
+// it must never be production (outside a NODE_ENV=production process, where
+// EL_* is the only profile there is); the production profile takes real
+// buyers' money, so it must never be UAT.
+export function iciciEnvironmentRefusal(environment = 'uat') {
+  const host = iciciProfile(environment).baseUrl || '';
+  if (environment === 'production') {
+    if (!config.iciciProduction.enabled) {
+      return 'Production ICICI Lombard is not enabled on this server (EL_PRODUCTION_ENABLED).';
+    }
+    if (/insurancearticlez/i.test(host)) {
+      return 'EL_PROD_BASE_URL points at ICICI Lombard UAT; production buyers must not reach it.';
+    }
+  } else if (config.env !== 'production' && /icicilombard\.com/i.test(host)) {
+    return 'EL_BASE_URL points at ICICI Lombard production, but it is the UAT profile the UAT SPA reaches. Production belongs in EL_PROD_BASE_URL.';
+  }
+  return null;
 }
 
 // True when none of the connection variables are set — a deployment that was

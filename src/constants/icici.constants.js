@@ -15,16 +15,24 @@
 // call is plain JSON with `Authorization: Bearer <token>`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Business operations → { pathKey, method }. `pathKey` resolves against
+// Business operations → { pathKey, method, retry? }. `pathKey` resolves against
 // config.icici.paths — see services/iciciApi.service.js's endpointFor(). COI's
 // {clientname}/{transactionId} are interpolated per call.
+//
+// `retry: false` — never retried on a timeout or 502/503/504, whatever
+// EL_MAX_RETRIES says. Each of these commits something at ICICI: a proposal
+// (which is known to commit even when ICICI's gateway times out at 9s), a
+// payment sync, an EMI payment. A timeout there means the outcome is UNKNOWN,
+// and a replay can raise a second proposal or take a payment twice; the outcome
+// is read back with /policy/status on the same TransactionId instead. A 401 is
+// still refreshed and replayed once — ICICI refused it before doing anything.
 const ICICI_OPERATIONS = {
   premium: { pathKey: 'premium', method: 'POST' },
-  proposal: { pathKey: 'proposal', method: 'POST' },
-  policySync: { pathKey: 'policySync', method: 'POST' },
+  proposal: { pathKey: 'proposal', method: 'POST', retry: false },
+  policySync: { pathKey: 'policySync', method: 'POST', retry: false },
   policyStatus: { pathKey: 'policyStatus', method: 'POST' },
   emiDue: { pathKey: 'emiDue', method: 'POST' },
-  emiProcess: { pathKey: 'emiProcess', method: 'POST' },
+  emiProcess: { pathKey: 'emiProcess', method: 'POST', retry: false },
   coi: { pathKey: 'coi', method: 'GET' },
   zone: { pathKey: 'zone', method: 'POST' },
   ckyc: { pathKey: 'ckyc', method: 'POST' },

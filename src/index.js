@@ -25,6 +25,7 @@ import config, {
   missingFgVariables, missingFgPaymentVariables, fgIsUnconfigured, fgCkycFlavour,
   missingIciciVariables, iciciIsUnconfigured,
   missingCholaVariables, cholaIsUnconfigured, missingCholaCkycVariables,
+  iciciProductionPathsNotSet,
 } from './config/env.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
@@ -311,6 +312,17 @@ function reportIcici(alias) {
   }
   console.log(`  Upstream base      → ${config.icici.baseUrl || '(EL_BASE_URL not set)'}`);
   console.log(`  Password           → ${config.icici.passwordPreEncrypted ? 'sent pre-encrypted' : `encrypted here (${config.icici.aesMode})`}`);
+  // The production profile on this same server, reached only by X-App-Env: prod.
+  const prod = config.iciciProduction;
+  if (!prod.enabled) {
+    console.log('  Production         → off (EL_PRODUCTION_ENABLED); production builds are refused');
+  } else {
+    console.log(`  Production         → ${prod.baseUrl || '(EL_PROD_BASE_URL not set)'} token ${prod.paths.token || '(EL_PROD_TOKEN_PATH not set)'} — X-App-Env: prod only`);
+    const prodPathsNotSet = iciciProductionPathsNotSet();
+    if (prodPathsNotSet.length > 0) {
+      console.warn(`  ⚠️  Production paths not set — ${prodPathsNotSet.join(', ')}; those operations answer 503.`);
+    }
+  }
 
   if (!config.icici.clientName) {
     console.warn('  ⚠️  EL_CLIENT_NAME is not set — the certificate-of-insurance path will carry an');

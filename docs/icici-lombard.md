@@ -145,7 +145,7 @@ standalone service's, so its `EL_*` block copies across.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `EL_BASE_URL` | ✅ | — | UAT `https://ilesbapigee.insurancearticlez.com`, prod `https://janus.icicilombard.com`. Startup refuses production on the UAT host. |
+| `EL_BASE_URL` | ✅ | — | UAT `https://ilesbapigee.insurancearticlez.com`. Production is `EL_PROD_BASE_URL` (`https://janus.icicilombard.com`), never this — an `icicilombard.com` host here is refused at request time. |
 | `EL_LOGIN` | ✅ | — | |
 | `EL_PASSWORD` | ✅ | — | as issued by IL |
 | `EL_PASSWORD_PRE_ENCRYPTED` | | `false` | `true` for the credential IL actually issue |
@@ -165,20 +165,61 @@ standalone service's, so its `EL_*` block copies across.
 `EL_IMID_CODE` was declared by the standalone service but never read; it is not
 read here either.
 
-UAT → production is `EL_BASE_URL` plus the production credential. No source change.
+Production is the separate `EL_PROD_*` block plus `EL_PRODUCTION_ENABLED`, on
+the same server — see **Going to production**.
+
+## Going to production
+
+Production ICICI runs on the **existing backend**
+(`healthinsurance.tommyandfurry.com/health`) beside UAT, because that one
+process serves both SPAs. It does not replace the `EL_*` (UAT) values; it has
+its own `EL_PROD_*` block (see `.env.example`), and each request picks one:
+
+| `X-App-Env` on the request | ICICI reached | Who sends it |
+|---|---|---|
+| absent, or `uat` | UAT — `EL_*`, unchanged | the UAT SPA, the New UI, any old build |
+| `prod` | production — `EL_PROD_*`, only while `EL_PRODUCTION_ENABLED=true`; otherwise 403 | the production SPA (`elevateClient.js`) |
+| anything else | 403 | — |
+
+The two SPAs share an origin, so CORS cannot do this. `NODE_ENV` stays `uat`;
+no other insurer reads any of it.
+
+What enforces the split (middleware/iciciClientEnvironment.js,
+helpers/iciciEnvironment.helper.js, `iciciEnvironmentRefusal` in config/env.js):
+
+- Host, credential, every path, the client name and the cached token are taken
+  from the request's environment; the two token caches are separate.
+- `EL_PROD_*` has **no defaults**. An operation ICICI have not issued a
+  production path for (EMI) answers 503 naming `EL_PROD_*_PATH`, never the UAT
+  path. `GET /icici-lombard/config/test` reports `production.pathsNotSet`.
+- The UAT profile is refused if `EL_BASE_URL` is an `icicilombard.com` host
+  ("replacing" UAT in place would put UAT testers on production); the
+  production profile is refused if `EL_PROD_BASE_URL` is ICICI's UAT host.
+- Production log lines carry `env=production`.
+
+Audit rows for production calls land in the same `nivabupa_api_transactions`
+table as UAT (the shared database), told apart by the endpoint host.
+
+First live checks, each a read, on the server after the `EL_PROD_*` lines are
+in its `.env`: `ICICI_SMOKE_ENV=production npm run smoke:icici token`, then
+`… zone`. The script refuses anything else on production: a premium mints a
+TransactionId at ICICI — run it only once ICICI confirm it creates no
+transaction. CKYC, proposal and payment verify a real identity and
+move real money — only with an approved buyer.
 
 ## Retries
 
-⚠️ The standalone service retried **every** Elevate call on a transport failure
-or HTTP 502/503/504 — proposal-payment and policy sync included — and that is
-preserved exactly, because the migration does not change business behaviour.
+Quote, status, CKYC, OVD, zone, EMI due and COI are retried on a transport
+failure or HTTP 502/503/504, `EL_MAX_RETRIES` times.
 
-IFFCO Tokio and Future Generali deliberately never retry their
-proposal/issuance calls: a timeout there means the outcome is **unknown**, and a
-replay can create a second proposal. ICICI's proposal is known to commit even
-when their gateway times out. Whether to stop retrying `proposal` and `issue`
-(or to run with `EL_MAX_RETRIES=0`) is a business decision worth making
-deliberately; it has not been made here.
+**Proposal-payment, policy sync and EMI process are never retried** (since
+2026-10-30, ahead of production; the standalone service retried them). Each
+commits something at ICICI, and ICICI's proposal is known to commit even when
+their gateway times out — so a timeout means the outcome is **unknown** and a
+replay can raise a second proposal or take a payment twice, which is why IFFCO
+Tokio and Future Generali never retry theirs either. The outcome is read back
+with `/policy/status` on the same TransactionId. A 401 is still refreshed and
+replayed once: ICICI refused it before doing anything.
 
 ## Logging
 

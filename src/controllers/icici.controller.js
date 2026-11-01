@@ -1,4 +1,6 @@
-import config, { missingIciciVariables, iciciIsUnconfigured } from '../config/env.js';
+import config, {
+  missingIciciVariables, iciciIsUnconfigured, iciciProductionPathsNotSet, iciciEnvironmentRefusal,
+} from '../config/env.js';
 import * as iciciApi from '../services/iciciApi.service.js';
 import * as iciciCkyc from '../services/iciciCkyc.service.js';
 import * as journeyService from '../services/journey.service.js';
@@ -433,12 +435,25 @@ export const testConfig = async (req, res) => {
       // Names only.
       missing,
       baseUrl: describeUrl(config.icici.baseUrl),
-      premiumEndpoint: ready ? describeUrl(iciciApi.endpointFor('premium').url) : null,
+      premiumEndpoint: ready ? describeUrl(safeEndpoint('premium')) : null,
       passwordPreEncrypted: config.icici.passwordPreEncrypted,
       // Only meaningful when the password is encrypted here.
       aesMode: config.icici.passwordPreEncrypted ? null : config.icici.aesMode,
       // COI builds its path from this; without it the certificate URL is wrong.
       clientNameSet: Boolean(config.icici.clientName),
+      // The production profile on this same server (X-App-Env: prod). Names and
+      // the host only. Its readiness does not change this probe's status, which
+      // stays the UAT answer it has always been.
+      production: {
+        enabled: config.iciciProduction.enabled,
+        configured: missingIciciVariables('production').length === 0,
+        missing: missingIciciVariables('production'),
+        pathsNotSet: iciciProductionPathsNotSet(),
+        baseUrl: describeUrl(config.iciciProduction.baseUrl),
+        tokenPath: config.iciciProduction.paths.token,
+        passwordPreEncrypted: config.iciciProduction.passwordPreEncrypted,
+        refusal: config.iciciProduction.enabled ? iciciEnvironmentRefusal('production') : null,
+      },
     },
   });
 };
