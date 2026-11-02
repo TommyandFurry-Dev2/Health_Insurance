@@ -5,6 +5,7 @@ import { encryptPaymentParams, decryptPaymentReturn } from '../services/soap.ser
 import { PAYMENT_DEFAULTS } from '../constants/payment.constants.js';
 import * as journeyService from '../services/journey.service.js';
 import * as logRepo from '../repositories/log.repository.js';
+import { rememberReturnTarget, findReturnTarget } from '../services/nivabupaReturnTarget.service.js';
 import { JOURNEY_STEPS } from '../constants/journey.constants.js';
 import {
   findMissingMandatoryFields,
@@ -12,7 +13,41 @@ import {
   logPaymentPlaintext,
   parseReturnMessage,
   buildSafeCallbackErrorMessage,
+  resolveFrontendReturnUrl,
 } from '../helpers/payment.helper.js';
+
+// Reads and removes body.frontendReturnUrl: the page of the calling frontend
+// the buyer should come back to (see handlePaymentReturn). Ours, not the
+// gateway's, so it comes off the body before the body is spread into the
+// payment fields, and never reaches the encrypted querystring, journey_payments
+// or the logs (middleware/journeyContext.js treats journeyId the same way).
+// A value that may not be used is logged and dropped, never refused: the
+// payment goes ahead and returns to FRONTEND_URL, as every payment did before.
+function takeFrontendReturnUrl(req) {
+  if (!req.body || typeof req.body !== 'object' || !Object.hasOwn(req.body, 'frontendReturnUrl')) return null;
+  const requested = req.body.frontendReturnUrl;
+  delete req.body.frontendReturnUrl;
+  const { url, reason } = resolveFrontendReturnUrl(requested, config.nivabupa.payment.frontendReturnOrigins);
+  if (reason) {
+    console.warn(`⚠️ NivaBupa payment/initiate — frontendReturnUrl ignored (${reason}); this payment returns to FRONTEND_URL.`);
+  }
+  return url;
+}
+
+// The page this payment's initiating frontend named, if one was kept for the
+// references the gateway echoes back and its origin is still allowed (the list
+// can shrink between initiate and callback). Null means FRONTEND_URL.
+function frontendReturnFor(parsed) {
+  for (const reference of new Set([parsed.uniqueReferenceId, parsed.uniqueReferenceNoRepeat])) {
+    if (!reference) continue;
+    const kept = findReturnTarget(reference);
+    if (!kept) continue;
+    const { url, reason } = resolveFrontendReturnUrl(kept, config.nivabupa.payment.frontendReturnOrigins);
+    if (url) return url;
+    console.warn(`   ⚠️ return page kept for ${reference} is no longer allowed (${reason}); using FRONTEND_URL.`);
+  }
+  return null;
+}
 
 // Builds and encrypts the payment querystring (`encparam`). The frontend
 // takes the response and auto-submits an HTML form POST to `gatewayUrl` —
@@ -24,6 +59,7 @@ import {
 export const initiatePayment = async (req, res) => {
   const startedAt = Date.now();
   const journeyId = req.journeyId;
+  const frontendReturnUrl = takeFrontendReturnUrl(req);
 
   try {
     const body = {
@@ -57,6 +93,12 @@ export const initiatePayment = async (req, res) => {
     const encparam = await encryptPaymentParams(querystring);
 
     console.log('📥 NivaBupa payment/initiate — final encparam:', encparam);
+
+    // Kept only once the gateway hand-off exists: a payment that never reached
+    // the gateway has no callback to route.
+    if (frontendReturnUrl && rememberReturnTarget(body.unqPolicyNumber, frontendReturnUrl)) {
+      console.log(`   ↩️  Return page for ${body.unqPolicyNumber}: ${frontendReturnUrl}`);
+    }
 
     const payment = await journeyService.recordPaymentInitiate({
       journeyId,
@@ -301,10 +343,18 @@ export const handlePaymentReturn = async (req, res) => {
       query.set('resumeToken', saved.journey.resume_token);
     }
 
-    console.log('\n----- Final Callback Response (redirect to frontend) -----');
-    console.log('   ', `${frontendUrl}${returnPath}?${query.toString()}`);
+    // The page the initiating frontend named at payment/initiate, else
+    // FRONTEND_URL exactly as before. The query string is the same either way.
+    const frontendReturn = frontendReturnFor(parsed);
+    const redirectUrl = frontendReturn
+      ? `${frontendReturn}?${query.toString()}`
+      : `${frontendUrl}${returnPath}?${query.toString()}`;
 
-    return res.redirect(302, `${frontendUrl}${returnPath}?${query.toString()}`);
+    console.log('\n----- Final Callback Response (redirect to frontend) -----');
+    console.log('   ', frontendReturn ? '(the return page this payment named)' : '(FRONTEND_URL)');
+    console.log('   ', redirectUrl);
+
+    return res.redirect(302, redirectUrl);
   } catch (error) {
     console.error('\n❌ NivaBupa payment return processing failed');
     // soapCause names which failure mode this was (WAF 406 / SOAP Fault / key

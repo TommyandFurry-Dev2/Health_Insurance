@@ -11,6 +11,10 @@ node_modules/
 # server — never commit it, and a stray copy must not block a git pull.
 returnmessage*.txt
 
+# The frontend return page each Niva Bupa payment named, kept until its gateway
+# callback arrives (services/nivabupaReturnTarget.service.js). Runtime state.
+data/nivabupa-return-targets/
+
 # `users` table dumps taken by scripts/setup-database.js before a migration
 # alters it. Customer data — never commit.
 backups/

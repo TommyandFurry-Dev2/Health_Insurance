@@ -20,13 +20,16 @@
 // listed at the bottom.
 // ─────────────────────────────────────────────────────────────────────────────
 import http from 'node:http';
+import { accessSync, constants as fsConstants, existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 import config from '../src/config/env.js';
 import { validateConfig, insecurePublicReturnUrl } from '../src/config/validate.js';
 import { createApp } from '../src/app.js';
 import db from '../src/db/index.js';
 
-import { buildPaymentQuerystring, parseReturnMessage, findMissingMandatoryFields } from '../src/helpers/payment.helper.js';
+import { buildPaymentQuerystring, parseReturnMessage, findMissingMandatoryFields, resolveFrontendReturnUrl } from '../src/helpers/payment.helper.js';
+import { returnTargetDir } from '../src/services/nivabupaReturnTarget.service.js';
 import { applyBusinessDefaults } from '../src/helpers/proposal.helper.js';
 import { escapeXml, extractTag } from '../src/helpers/xml.helper.js';
 import { forAudit, toMysqlDate, toDecimal, newResumeToken } from '../src/utils/sanitize.js';
@@ -391,6 +394,42 @@ check('the configured returnPath survives an http→https redirect', () => {
   assert(!insecurePublicReturnUrl(config.nivabupa.payment.returnUrl),
     `NIVABUPA_PAYMENT_RETURN_URL is plain http on a public host (${config.nivabupa.payment.returnUrl}) — use https://`);
   return config.nivabupa.payment.returnUrl;
+});
+
+check("a frontend's own return page is honoured only on an allowed origin and a /nivabupa-return page", () => {
+  const allowed = ['https://uat-site.tommyandfurry.com'];
+  const page = 'https://uat-site.tommyandfurry.com/insurance/get-quote/health/nivabupa-return';
+  assert(resolveFrontendReturnUrl(page, allowed).url === page, "the new site's return page was refused");
+  const none = resolveFrontendReturnUrl(undefined, allowed);
+  assert(none.url === null && none.reason === null, 'no value must quietly mean FRONTEND_URL');
+  for (const refused of [
+    'https://evil.example/insurance/get-quote/health/nivabupa-return',
+    'https://uat-site.tommyandfurry.com/insurance/get-quote/health/fg-return',
+    `${page}?next=https://evil.example`,
+    `${page}#top`,
+    'https://user:pw@uat-site.tommyandfurry.com/nivabupa-return',
+    'javascript:alert(1)//nivabupa-return',
+    '/insurance/get-quote/health/nivabupa-return',
+  ]) {
+    assert(resolveFrontendReturnUrl(refused, allowed).url === null, `accepted ${refused}`);
+  }
+});
+
+check('frontendReturnUrl never reaches the encrypted payment querystring', () => {
+  const body = { ...PAYMENT_DEFAULTS, returnPath: config.nivabupa.payment.returnUrl, ...SAMPLE_PAYMENT };
+  const named = { ...body, frontendReturnUrl: 'https://uat-site.tommyandfurry.com/insurance/get-quote/health/nivabupa-return' };
+  assert(buildPaymentQuerystring(named) === buildPaymentQuerystring(body), 'the querystring changed');
+});
+
+check('per-payment return pages: allowed origins, and a store this process can write', () => {
+  // Nothing is written here: the store makes its directory on the first payment
+  // that names a page, so what matters is that the nearest existing folder on
+  // that path is writable.
+  let folder = returnTargetDir();
+  while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
+  accessSync(folder, fsConstants.W_OK);
+  const origins = config.nivabupa.payment.frontendReturnOrigins;
+  return `${origins.join(', ') || '(none: every payment returns to FRONTEND_URL)'}; kept in ${returnTargetDir()}`;
 });
 
 check('callback returnMessage parses to the documented field order', () => {

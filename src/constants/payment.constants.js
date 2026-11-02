@@ -31,9 +31,17 @@ const PAYMENT_DEFAULTS = {
 // payment; everything else is treated as failed/other.
 const PAYMENT_SUCCESS_CODE = 'M001';
 
+// The name of the Niva Bupa payment return page on every frontend this backend
+// serves: the old app's route, which the new site keeps under its own health
+// base (/insurance/get-quote/health/nivabupa-return). A frontendReturnUrl must
+// end in it (resolveFrontendReturnUrl in helpers/payment.helper.js). Not
+// FRONTEND_RETURN_PATH: that one is the old app's whole path on its own host.
+const NIVABUPA_RETURN_PAGE = '/nivabupa-return';
+
 export {
   PAYMENT_QUERYSTRING_FIELDS,
   PAYMENT_MANDATORY_FIELDS,
   PAYMENT_DEFAULTS,
   PAYMENT_SUCCESS_CODE,
+  NIVABUPA_RETURN_PAGE,
 };

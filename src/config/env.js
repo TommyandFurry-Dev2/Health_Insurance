@@ -122,6 +122,20 @@ function trimTrailingSlash(value) {
   return typeof value === 'string' ? value.replace(/\/+$/, '') : value;
 }
 
+// 'a, b,,c' → ['a', 'b', 'c'].
+function splitList(value) {
+  return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+// Whether a URL points at this machine.
+function isLoopbackUrl(value) {
+  try {
+    return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 // Strict equality, deliberately not `(process.env.NODE_ENV || 'development')`
 // like config.env below. The two failure modes are not symmetric: a deployment
 // with NODE_ENV unset or empty would take that default and start handing real
@@ -285,6 +299,28 @@ const config = {
       defaults: {
         paymentType: envOr('NIVABUPA_PAYMENT_TYPE', PAYMENT_DEFAULTS_VALUES.paymentType),
         isjuspay: envOr('NIVABUPA_PAYMENT_ISJUSPAY', PAYMENT_DEFAULTS_VALUES.isjuspay),
+      },
+      // Origins of the frontends that may name their own return page on
+      // payment/initiate (frontendReturnUrl, checked by resolveFrontendReturnUrl
+      // in helpers/payment.helper.js). A payment that names none, or one not on
+      // this list, still returns to FRONTEND_URL + FRONTEND_RETURN_PATH, so one
+      // backend serves both frontends without FRONTEND_URL moving. Read like
+      // NIVABUPA_CORS_ORIGINS, not through envOr: it is optional, and its
+      // default is not a UAT value production would have to replace.
+      //
+      // A local run adds the local Vite dev server. Local means NODE_ENV=development
+      // or a FRONTEND_URL on this machine: a developer's .env mirrors the server's,
+      // NODE_ENV=uat included, and only .env.local points FRONTEND_URL at a local
+      // dev server. A deployed backend never has a localhost FRONTEND_URL.
+      frontendReturnOrigins: [
+        ...splitList(process.env.NIVABUPA_FRONTEND_RETURN_ORIGINS || APP_DEFAULTS.frontendReturnOrigins),
+        ...(isDevelopment || isLoopbackUrl(frontendUrl) ? splitList(APP_DEFAULTS.devFrontendReturnOrigins) : []),
+      ],
+      // Where the page each payment named waits for its callback
+      // (services/nivabupaReturnTarget.service.js), and for how long.
+      returnTargets: {
+        dir: process.env.NIVABUPA_RETURN_TARGET_DIR || APP_DEFAULTS.returnTargetDir,
+        ttlHours: APP_DEFAULTS.returnTargetTtlHours,
       },
     },
 

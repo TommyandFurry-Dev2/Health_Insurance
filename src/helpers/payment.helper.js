@@ -2,6 +2,7 @@ import {
   PAYMENT_QUERYSTRING_FIELDS,
   PAYMENT_MANDATORY_FIELDS,
   PAYMENT_SUCCESS_CODE,
+  NIVABUPA_RETURN_PAGE,
 } from '../constants/payment.constants.js';
 
 function normalizeField(value) {
@@ -74,10 +75,56 @@ function buildSafeCallbackErrorMessage(error) {
   return error.soapCause ? `${detail} | Cause: ${error.soapCause}` : detail;
 }
 
+// Longer than any real return page, short enough that a junk value is refused
+// before it is parsed or written anywhere.
+const FRONTEND_RETURN_URL_MAX = 500;
+
+function originOf(value) {
+  try {
+    return new URL(String(value).trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+// Whether handlePaymentReturn may send the buyer to the return page a frontend
+// named on payment/initiate (body.frontendReturnUrl) instead of FRONTEND_URL.
+// Yes only for an absolute http(s) URL whose origin is on allowedOrigins and
+// whose path ends in the Niva Bupa return page, with no credentials, query
+// string or fragment (the payment outcome is appended as the query string).
+//
+// Returns { url } with only the origin and path kept, or { url: null, reason }.
+// No value at all is not a refusal ({ url: null, reason: null }): the old app
+// names no page, and its buyers go to FRONTEND_URL exactly as before.
+function resolveFrontendReturnUrl(value, allowedOrigins) {
+  if (value === undefined || value === null || value === '') return { url: null, reason: null };
+  if (typeof value !== 'string' || value.length > FRONTEND_RETURN_URL_MAX) {
+    return { url: null, reason: `not a string of at most ${FRONTEND_RETURN_URL_MAX} characters` };
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { url: null, reason: 'not an absolute URL' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { url: null, reason: `${parsed.protocol} is not http(s)` };
+  }
+  if (parsed.username || parsed.password) return { url: null, reason: 'carries credentials' };
+  if (parsed.search || parsed.hash) return { url: null, reason: 'carries a query string or fragment' };
+  const allowed = (allowedOrigins || []).map(originOf).filter(Boolean);
+  if (!allowed.includes(parsed.origin)) return { url: null, reason: `origin ${parsed.origin} is not allowed` };
+  if (!parsed.pathname.endsWith(NIVABUPA_RETURN_PAGE)) {
+    return { url: null, reason: `path ${parsed.pathname} is not a ${NIVABUPA_RETURN_PAGE} page` };
+  }
+  return { url: `${parsed.origin}${parsed.pathname}`, reason: null };
+}
+
 export {
   findMissingMandatoryFields,
   buildPaymentQuerystring,
   logPaymentPlaintext,
   parseReturnMessage,
   buildSafeCallbackErrorMessage,
+  resolveFrontendReturnUrl,
 };

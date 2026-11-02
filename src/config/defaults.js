@@ -455,6 +455,18 @@ export const APP_DEFAULTS = {
   frontendKycReturnPath: '/nivabupa-kyc-return',
   // The public URL registered with NivaBupa as `returnPath`.
   prodPaymentReturnUrl: 'https://ondc.healthinsurance.tommyandfurry.com/health/nivabupa/payment/return',
+  // Frontends allowed to name their own payment return page on payment/initiate
+  // (frontendReturnUrl): the new site, on UAT and in production. Comma-separated.
+  // The old app names none and keeps returning to FRONTEND_URL.
+  frontendReturnOrigins: 'https://uat-site.tommyandfurry.com,https://www.tommyandfurry.com',
+  // Added on a local run only (NODE_ENV=development, or a FRONTEND_URL on this
+  // machine), so a local backend can send the local Vite dev server (the same
+  // address as devFrontendUrl) back to itself.
+  devFrontendReturnOrigins: 'http://localhost:5173,http://127.0.0.1:5173',
+  // Where each payment's chosen return page waits for its gateway callback,
+  // relative to the working directory (gitignored), and for how long it counts.
+  returnTargetDir: 'data/nivabupa-return-targets',
+  returnTargetTtlHours: 72,
   // Every NivaBupa route lives under this prefix.
   pathPrefix: '/nivabupa',
   // Compatibility alias: the ONDC backend served every route under /health too,
