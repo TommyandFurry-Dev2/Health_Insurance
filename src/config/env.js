@@ -29,6 +29,7 @@ import {
   FG_DEFAULTS as FG,
   ICICI_DEFAULTS as IL,
   CHOLA_DEFAULTS as CH,
+  CHOLA_FREECHARGE_DEFAULTS as CF,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -842,6 +843,57 @@ const config = {
 
     jsonBodyLimit: envOr('CHOLA_JSON_BODY_LIMIT', CH.jsonBodyLimit),
 
+    // Freecharge (FCPG), the gateway Chola collect premium through — see
+    // services/cholaFreechargePayment.service.js. Its APIs sit on Chola's WSO2
+    // gateway under a SEPARATE OAuth2 client: the product client above answers
+    // 900908 "API Subscription validation failed" on every /free-charge path
+    // (UAT, 2026-11-17). Unset, the /chola-ms/freecharge routes answer 503 and
+    // nothing else is affected.
+    freecharge: {
+      // Chola's gateway. Same host as the product APIs on UAT.
+      baseUrl: trimTrailingSlash(requiredEnv('CHOLA_FREECHARGE_BASE_URL') || requiredEnv('CHOLA_BASE_URL')) || null,
+      // Absolute. Chola are to share the final token URL separately, so it is
+      // its own variable; unset, the token is minted at baseUrl + paths.token.
+      tokenUrl: requiredEnv('CHOLA_FREECHARGE_TOKEN_URL') || null,
+      // The OAuth2 client_credentials pair, sent as HTTP Basic — or the Basic
+      // value exactly as Chola issued it (base64 of id:secret), which wins.
+      clientId: requiredEnv('CHOLA_FREECHARGE_CLIENT_ID') || null,
+      clientSecret: requiredEnv('CHOLA_FREECHARGE_CLIENT_SECRET') || null,
+      basicAuth: requiredEnv('CHOLA_FREECHARGE_BASIC_AUTH') || null,
+      // Chola's Freecharge merchant id (UAT MER6dca324492).
+      merchantId: requiredEnv('CHOLA_FREECHARGE_MERCHANT_ID') || null,
+      // FCPG's hosted checkout, which the buyer's browser form-POSTs clientId +
+      // encData to: https://sandbox-axispg.freecharge.in/payment/v1/checkout on
+      // UAT, https://secure-axispg.freecharge.in/payment/v1/checkout live.
+      checkoutUrl: requiredEnv('CHOLA_FREECHARGE_CHECKOUT_URL') || null,
+      // The public address of /chola-ms/freecharge/return on this service, sent
+      // as callbackUrl on every checkout. FCPG return the buyer there.
+      callbackUrl: requiredEnv('CHOLA_FREECHARGE_CALLBACK_URL') || null,
+      // Where a callback that cannot be matched to a payment sends the buyer
+      // (absolute, a /chola-return page). Matched callbacks go to the page the
+      // checkout named.
+      fallbackReturnUrl: requiredEnv('CHOLA_FREECHARGE_FRONTEND_RETURN_URL') || null,
+      // Origins whose /chola-return page a checkout may name. Defaults to the
+      // list NivaBupa's payment/initiate uses (the new site, UAT and live), plus
+      // the local Vite dev server on a local run.
+      frontendReturnOrigins: [
+        ...splitList(process.env.CHOLA_FREECHARGE_FRONTEND_RETURN_ORIGINS
+          || process.env.NIVABUPA_FRONTEND_RETURN_ORIGINS
+          || APP_DEFAULTS.frontendReturnOrigins),
+        ...(isDevelopment || isLoopbackUrl(frontendUrl) ? splitList(APP_DEFAULTS.devFrontendReturnOrigins) : []),
+      ],
+      currency: envOr('CHOLA_FREECHARGE_CURRENCY', CF.currency),
+      paths: {
+        token: envOr('CHOLA_FREECHARGE_TOKEN_PATH', CF.paths.token),
+        encrypt: envOr('CHOLA_FREECHARGE_ENCRYPT_PATH', CF.paths.encrypt),
+        decrypt: envOr('CHOLA_FREECHARGE_DECRYPT_PATH', CF.paths.decrypt),
+        txnStatus: envOr('CHOLA_FREECHARGE_TXN_STATUS_PATH', CF.paths.txnStatus),
+        payLinkCreate: envOr('CHOLA_FREECHARGE_PAYLINK_CREATE_PATH', CF.paths.payLinkCreate),
+        payLinkStatus: envOr('CHOLA_FREECHARGE_PAYLINK_STATUS_PATH', CF.paths.payLinkStatus),
+        refund: envOr('CHOLA_FREECHARGE_REFUND_PATH', CF.paths.refund),
+      },
+    },
+
     // Falls back to the NivaBupa/global list so one origin allow-list covers the
     // whole service; set CHOLA_CORS_ORIGINS only to diverge from it.
     corsOrigins: process.env.CHOLA_CORS_ORIGINS
@@ -1071,6 +1123,30 @@ export function missingCholaCkycVariables() {
   if (!config.chola.ckyc.baseUrl) missing.push('CHOLA_CKYC_BASE_URL');
   if (!config.chola.ckyc.privateKey) missing.push('CHOLA_CKYC_PRIVATE_KEY');
   return missing;
+}
+
+// What the Freecharge payment leg needs. Separate again: a different OAuth2
+// client from the product APIs, and quoting, CKYC and proposals all work
+// without it. Either the id/secret pair or the issued Basic value will do.
+export function missingCholaFreechargeVariables() {
+  const fc = config.chola.freecharge;
+  const missing = [];
+  if (!fc.baseUrl && !fc.tokenUrl) missing.push('CHOLA_FREECHARGE_BASE_URL');
+  if (!fc.basicAuth && (!fc.clientId || !fc.clientSecret)) {
+    missing.push('CHOLA_FREECHARGE_CLIENT_ID + CHOLA_FREECHARGE_CLIENT_SECRET (or CHOLA_FREECHARGE_BASIC_AUTH)');
+  }
+  if (!fc.merchantId) missing.push('CHOLA_FREECHARGE_MERCHANT_ID');
+  if (!fc.checkoutUrl) missing.push('CHOLA_FREECHARGE_CHECKOUT_URL');
+  if (!fc.callbackUrl) missing.push('CHOLA_FREECHARGE_CALLBACK_URL');
+  return missing;
+}
+
+// True when nothing Freecharge-specific is set — a deployment that does not
+// take Chola payments through Freecharge at all.
+export function cholaFreechargeIsUnconfigured() {
+  const fc = config.chola.freecharge;
+  return !fc.tokenUrl && !fc.clientId && !fc.clientSecret && !fc.basicAuth && !fc.merchantId
+    && !fc.checkoutUrl && !fc.callbackUrl;
 }
 
 // Names only — never values. Consumed by config/validate.js.

@@ -27,6 +27,7 @@
     "test:icici": "node scripts/test-icici.js",
     "smoke:chola": "node scripts/smoke-chola.js",
     "test:chola": "node scripts/test-chola.js",
+    "test:chola:freecharge": "node scripts/test-chola-freecharge.js",
     "uat:chola:apd": "node scripts/uat-chola-apd.js",
     "test:nivabupa-kyc": "node scripts/test-nivabupa-kyc.js",
     "smoke:nivabupa-kyc": "node scripts/smoke-nivabupa-kyc.js",

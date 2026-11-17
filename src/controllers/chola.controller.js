@@ -4,15 +4,21 @@ import { fileURLToPath } from 'node:url';
 
 import config, {
   missingCholaVariables, cholaIsUnconfigured, missingCholaCkycVariables,
+  missingCholaFreechargeVariables, cholaFreechargeIsUnconfigured,
 } from '../config/env.js';
 import * as cholaApi from '../services/cholaApi.service.js';
 import * as cholaCkyc from '../services/cholaCkyc.service.js';
 import * as cholaIssuer from '../services/cholaPolicyIssuer.service.js';
+import * as cholaFreecharge from '../services/cholaFreechargePayment.service.js';
+import { tokenEndpoint as freechargeTokenEndpoint } from '../services/cholaFreecharge.service.js';
 import * as journeyService from '../services/journey.service.js';
+import * as logRepo from '../repositories/log.repository.js';
 import {
   CHOLA_API_NAMES, CHOLA_PROVIDER, CHOLA_DEFAULT_PRODUCT, CHOLA_PAYMENT_MODES, CHOLA_PROPOSAL_STATUS,
+  CHOLA_FREECHARGE_STATUS, CHOLA_RETURN_PAGE,
 } from '../constants/chola.constants.js';
 import { configError, unauthorizedError, notFoundError } from '../helpers/chola.helper.js';
+import { resolveFrontendReturnUrl } from '../helpers/payment.helper.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Chola MS endpoints.
@@ -126,10 +132,14 @@ function businessFailure(operation, data) {
  * @param {object}   spec
  * @param {string}   spec.operation      Chola's operation name, for the audit URL
  * @param {string}   spec.apiName        api_transactions.api_name
- * @param {Function} spec.run            (body) => { result, exchange }
+ * @param {Function} spec.run            (body, req) => { result, exchange }
  * @param {Function} spec.correlationOf  (body, result?) => the id to record
+ * @param {Function} [spec.endpointOf]   (body) => the audit URL when no request
+ *   went upstream; a product operation's URL unless the route says otherwise
  */
-function passThrough({ operation, apiName, run, correlationOf }) {
+function passThrough({
+  operation, apiName, run, correlationOf, endpointOf = (body) => safeEndpoint(body, operation),
+}) {
   return async (req, res) => {
     const startedAt = Date.now();
     // The working implementation parsed bodies with Express 4, where a request
@@ -137,14 +147,14 @@ function passThrough({ operation, apiName, run, correlationOf }) {
     const body = req.body ?? {};
 
     try {
-      const { result, exchange } = await run(body);
+      const { result, exchange } = await run(body, req);
 
       await audit({
         req,
         apiName,
         startedAt,
         httpStatus: exchange?.responseStatus,
-        endpointUrl: exchange?.url || safeEndpoint(body, operation),
+        endpointUrl: exchange?.url || endpointOf(body),
         requestPayload: body,
         responsePayload: result.data,
         errorMessage: businessFailure(operation, result.data),
@@ -160,7 +170,7 @@ function passThrough({ operation, apiName, run, correlationOf }) {
         apiName,
         startedAt,
         httpStatus: failedHttpStatus(error),
-        endpointUrl: error.exchange?.url || safeEndpoint(body, operation),
+        endpointUrl: error.exchange?.url || endpointOf(body),
         requestPayload: body,
         responsePayload: error.details || null,
         errorCode: error.code || 'INTERNAL_ERROR',
@@ -319,6 +329,148 @@ export const ckycQuery = ckycHandler({
   run: (body) => cholaCkyc.query(body),
 });
 
+// ── Freecharge payment ──────────────────────────────────────────────────────
+//
+// The gateway Chola collect premium through: checkout → FCPG's hosted page →
+// callback → txn/status → PolicyGeneration (PG_DIRECT). The flow is
+// services/cholaFreechargePayment.service.js; these are its doors.
+
+// No product operation stands behind these routes, so when nothing went
+// upstream the audit row names the Freecharge endpoint the route is about.
+const freechargeUrl = (path) => () => {
+  const fc = config.chola.freecharge;
+  return fc.baseUrl ? `${fc.baseUrl}${fc.paths[path]}` : null;
+};
+
+// POST /chola-ms/freecharge/initiate
+//
+// { product?, GenconProposalNumber, Amount, frontendReturnUrl } → the form the
+// browser POSTs to FCPG's checkout, and the opaque ref the return page reads
+// the payment by. Refused while an earlier checkout for the proposal is paid,
+// or not yet known to have failed.
+export const freechargeInitiate = passThrough({
+  operation: 'FreechargeCheckout',
+  apiName: CHOLA_API_NAMES.FREECHARGE_CHECKOUT,
+  run: (body) => cholaFreecharge.initiate(body),
+  correlationOf: (body) => body.GenconProposalNumber,
+  endpointOf: freechargeUrl('encrypt'),
+});
+
+// The buyer's browser on to their /chola-return page with only the opaque ref
+// — no payment detail in a URL, a referrer or a log. The page a checkout named
+// is re-checked against the allowed origins (the list can shrink between the
+// checkout and the callback).
+function sendToReturnPage(res, url, params) {
+  const fc = config.chola.freecharge;
+  const named = url ? resolveFrontendReturnUrl(url, fc.frontendReturnOrigins, CHOLA_RETURN_PAGE).url : null;
+  const target = named || fc.fallbackReturnUrl;
+  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value)).toString();
+  if (target) return res.redirect(303, `${target}${target.includes('?') ? '&' : '?'}${query}`);
+  // Nowhere to send the buyer (CHOLA_FREECHARGE_FRONTEND_RETURN_URL unset):
+  // plain words, never a JSON body or a blank page.
+  return res
+    .status(200)
+    .type('text/plain; charset=utf-8')
+    .send(
+      'Your payment result has been received, but we could not take you back to the website. '
+      + `Please do not pay again. Contact support${params.ref ? ` and quote reference ${params.ref}` : ''}.`
+    );
+}
+
+// ALL /chola-ms/freecharge/return
+//
+// ⚠️ FCPG send the buyer back here — the callbackUrl on every checkout, with
+// ?ref=<ours> — posting an ENCRYPTED { clientId, encData }. A static page can
+// neither read a POST body nor decrypt it, so this route has Chola open it,
+// has FCPG's txn/status confirm it (the callback alone is never trusted),
+// starts issuance for a confirmed payment, and sends the browser on with the
+// ref. Answered with a 303: this request IS the buyer arriving back.
+//
+// Registered for every method, never rate-limited, and it must never 404: a
+// callback that lands on nothing is a buyer who paid.
+export const freechargeReturn = async (req, res) => {
+  const startedAt = Date.now();
+  // The values can arrive on either side depending on how FCPG redirect.
+  const source = { ...(req.query || {}), ...(req.body || {}) };
+
+  // Keys only, before anything is read out of it.
+  console.log('\n========== Chola Freecharge Callback Received ==========');
+  console.log('Timestamp  :', new Date().toISOString());
+  console.log('Method     :', req.method);
+  console.log('Query keys :', Object.keys(req.query || {}));
+  console.log('Body keys  :', Object.keys(req.body || {}));
+  console.log('========================================================');
+
+  try {
+    const outcome = await cholaFreecharge.handleReturn(source);
+    const row = outcome.row || null;
+    console.log(`   Matched  : ${outcome.matched ? row.merchant_txn_id : 'no'}`);
+    console.log(`   Payment  : ${row?.status ?? '—'} (${row?.status_code ?? '—'})`);
+    console.log(`   Issuance : ${row?.issue_status ?? '—'}`);
+
+    await audit({
+      req,
+      apiName: CHOLA_API_NAMES.FREECHARGE_CALLBACK,
+      startedAt,
+      httpStatus: 200,
+      endpointUrl: null,
+      // The raw callback — ciphertext, which is the point: it can be decrypted
+      // again if anything after this line failed.
+      requestPayload: source,
+      responsePayload: {
+        matched: outcome.matched,
+        merchantTxnId: row?.merchant_txn_id ?? outcome.callback?.merchantTxnId ?? null,
+        paymentStatus: row?.status ?? null,
+        statusCode: row?.status_code ?? outcome.callback?.statusCode ?? null,
+        issueStatus: row?.issue_status ?? null,
+        decryptError: outcome.decryptError ? outcome.decryptError.message : null,
+      },
+      // Anything but a confirmed payment is recorded as FAILED so it is
+      // findable: money may have moved without a policy.
+      errorMessage: row?.status === CHOLA_FREECHARGE_STATUS.SUCCESS
+        ? null
+        : `Chola Freecharge callback: ${row ? row.status : 'matched no payment'}`
+          + `${outcome.decryptError ? ` — decrypt failed: ${outcome.decryptError.message}` : ''}`,
+      correlationId: row?.gencon_proposal_number ?? null,
+    });
+
+    if (!outcome.matched) return sendToReturnPage(res, null, { error: 'callback' });
+    return sendToReturnPage(res, row.frontend_return_url, { ref: row.return_token });
+  } catch (error) {
+    // A callback that ARRIVED but could not be processed: keep it raw before
+    // anything else, whatever else fails — reconciliation starts from it.
+    console.error('❌ Chola Freecharge callback processing failed:', error.message);
+    await journeyService.safeSave('cholaFreechargeCallbackFailure', () => logRepo.recordApiTransaction({
+      journeyId: req.journeyId || null,
+      apiName: CHOLA_API_NAMES.FREECHARGE_CALLBACK,
+      direction: 'INBOUND',
+      status: 'FAILED',
+      requestPayload: source,
+      errorMessage: error.message,
+      correlationId: null,
+    }));
+    // The page says "we could not read this payment result — do not pay
+    // again", and can still look the payment up by the ref.
+    return sendToReturnPage(res, null, { error: 'callback', ref: typeof source.ref === 'string' ? source.ref : null });
+  }
+};
+
+// GET /chola-ms/freecharge/result/:ref — what the return page reads. Read only.
+export const freechargeResult = jsonRead((req) => cholaFreecharge.result(req.params.ref));
+
+// POST /chola-ms/freecharge/status { ref }
+//
+// "Check again": asks FCPG about a payment not yet settled (the callback may
+// never have come) and starts issuance for a paid one not yet tried. Safe to
+// repeat; never takes or re-sends a payment.
+export const freechargeRecheck = passThrough({
+  operation: 'FreechargeTxnStatus',
+  apiName: CHOLA_API_NAMES.FREECHARGE_STATUS,
+  run: async (body) => ({ result: await cholaFreecharge.recheck(body.ref), exchange: null }),
+  correlationOf: (body, result) => result?.data?.genconProposalNumber ?? null,
+  endpointOf: freechargeUrl('txnStatus'),
+});
+
 // ── Ops: backend-built PolicyGeneration (APD) ───────────────────────────────
 //
 // Never called by the website. These act on NovaCred's own account with Chola
@@ -396,6 +548,68 @@ export const opsProposalPdf = async (req, res) => {
   }
 };
 
+// ── Ops: Freecharge payments ────────────────────────────────────────────────
+//
+// Reconciliation for the Freecharge leg, behind the same X-Ops-Key. Every one
+// of these acts on a payment the website started, by its merchantTxnId.
+
+const opsFreechargeCorrelation = (body, result) => result?.data?.genconProposalNumber ?? null;
+
+// GET /chola-ms/ops/freecharge/payments — the most recent checkouts, any proposal.
+export const opsFreechargePayments = jsonRead((req) => cholaFreecharge.listPayments({ limit: req.query.limit }));
+
+// GET /chola-ms/ops/freecharge/payments/:merchantTxnId — one, with the raw
+// callback, the decrypted callback and FCPG's last answers.
+export const opsFreechargePayment = jsonRead((req) => cholaFreecharge.paymentDetail(req.params.merchantTxnId));
+
+// POST /chola-ms/ops/freecharge/payments/:merchantTxnId/status — ask FCPG
+// again (NEEDS_REVIEW included); starts issuance if it is now paid.
+export const opsFreechargeVerify = passThrough({
+  operation: 'FreechargeTxnStatus',
+  apiName: CHOLA_API_NAMES.FREECHARGE_STATUS,
+  run: async (body, req) => ({ result: await cholaFreecharge.opsVerify(req.params.merchantTxnId), exchange: null }),
+  correlationOf: opsFreechargeCorrelation,
+  endpointOf: freechargeUrl('txnStatus'),
+});
+
+// POST /chola-ms/ops/freecharge/payments/:merchantTxnId/issue — PolicyGeneration
+// for a paid checkout whose issuance never left or Chola refused. Never for
+// one whose outcome is unknown.
+export const opsFreechargeIssue = passThrough({
+  operation: 'PolicyGeneration',
+  apiName: CHOLA_API_NAMES.OPS_POLICY_GENERATION,
+  run: async (body, req) => ({ result: await cholaFreecharge.opsIssue(req.params.merchantTxnId), exchange: null }),
+  correlationOf: opsFreechargeCorrelation,
+});
+
+// POST /chola-ms/ops/freecharge/payments/:merchantTxnId/refund
+//   { refundAmount?, refundType? 'OFFLINE' | 'ONLINE' } — sent once.
+export const opsFreechargeRefund = passThrough({
+  operation: 'FreechargeRefund',
+  apiName: CHOLA_API_NAMES.FREECHARGE_REFUND,
+  run: (body, req) => cholaFreecharge.opsRefund(req.params.merchantTxnId, body),
+  correlationOf: (body, result) => result?.data?.merchantRefundTxnId ?? null,
+  endpointOf: freechargeUrl('refund'),
+});
+
+// POST /chola-ms/ops/freecharge/paylink — paylinkqr/create, the collection's body.
+export const opsFreechargePayLink = passThrough({
+  operation: 'FreechargePayLink',
+  apiName: CHOLA_API_NAMES.FREECHARGE_PAYLINK,
+  run: (body) => cholaFreecharge.opsCreatePayLink(body),
+  correlationOf: (body) => body.entityTxnId ?? null,
+  endpointOf: freechargeUrl('payLinkCreate'),
+});
+
+// POST /chola-ms/ops/freecharge/paylink/status { entityTxnId }
+export const opsFreechargePayLinkStatus = passThrough({
+  operation: 'FreechargePayLinkStatus',
+  apiName: CHOLA_API_NAMES.FREECHARGE_PAYLINK,
+  run: (body) => cholaFreecharge.opsPayLinkStatus(body),
+  correlationOf: (body) => body.entityTxnId ?? null,
+  endpointOf: freechargeUrl('payLinkStatus'),
+});
+
 // ── The ops screen ──────────────────────────────────────────────────────────
 //
 // Static and holds no data: it asks for the ops key and reads the routes above
@@ -457,8 +671,10 @@ function describeUrl(value) {
 export const testConfig = async (req, res) => {
   const missing = missingCholaVariables();
   const ckycMissing = missingCholaCkycVariables();
+  const freechargeMissing = missingCholaFreechargeVariables();
   const ready = missing.length === 0;
   const mode = config.chola.paymentMode;
+  const fc = config.chola.freecharge;
 
   return res.status(ready ? 200 : 503).json({
     ok: ready,
@@ -483,6 +699,22 @@ export const testConfig = async (req, res) => {
       apdRefusedHere: mode === 'APD' && config.env === 'production',
       publicUrlBaseSet: Boolean(config.chola.publicUrlBase),
       opsRoutesEnabled: Boolean(config.chola.opsKey),
+      // The Freecharge payment leg: its own OAuth2 client, so its own report.
+      freecharge: {
+        configured: freechargeMissing.length === 0,
+        unconfigured: cholaFreechargeIsUnconfigured(),
+        missing: freechargeMissing,
+        baseUrl: describeUrl(fc.baseUrl),
+        tokenUrl: fc.tokenUrl || fc.baseUrl ? describeUrl(freechargeTokenEndpoint()) : null,
+        // false: still minting at the base URL's /oauth2/token, pending the
+        // token URL Chola are to share.
+        tokenUrlSet: Boolean(fc.tokenUrl),
+        merchantIdSet: Boolean(fc.merchantId),
+        checkoutUrl: describeUrl(fc.checkoutUrl),
+        callbackUrl: describeUrl(fc.callbackUrl),
+        fallbackReturnUrl: describeUrl(fc.fallbackReturnUrl),
+        returnOrigins: fc.frontendReturnOrigins,
+      },
     },
   });
 };

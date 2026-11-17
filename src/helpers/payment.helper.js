@@ -96,7 +96,10 @@ function originOf(value) {
 // Returns { url } with only the origin and path kept, or { url: null, reason }.
 // No value at all is not a refusal ({ url: null, reason: null }): the old app
 // names no page, and its buyers go to FRONTEND_URL exactly as before.
-function resolveFrontendReturnUrl(value, allowedOrigins) {
+//
+// `returnPage` is the page the path must end in — Niva Bupa's unless another
+// insurer's checkout (Chola's Freecharge one, '/chola-return') names its own.
+function resolveFrontendReturnUrl(value, allowedOrigins, returnPage = NIVABUPA_RETURN_PAGE) {
   if (value === undefined || value === null || value === '') return { url: null, reason: null };
   if (typeof value !== 'string' || value.length > FRONTEND_RETURN_URL_MAX) {
     return { url: null, reason: `not a string of at most ${FRONTEND_RETURN_URL_MAX} characters` };
@@ -114,8 +117,8 @@ function resolveFrontendReturnUrl(value, allowedOrigins) {
   if (parsed.search || parsed.hash) return { url: null, reason: 'carries a query string or fragment' };
   const allowed = (allowedOrigins || []).map(originOf).filter(Boolean);
   if (!allowed.includes(parsed.origin)) return { url: null, reason: `origin ${parsed.origin} is not allowed` };
-  if (!parsed.pathname.endsWith(NIVABUPA_RETURN_PAGE)) {
-    return { url: null, reason: `path ${parsed.pathname} is not a ${NIVABUPA_RETURN_PAGE} page` };
+  if (!parsed.pathname.endsWith(returnPage)) {
+    return { url: null, reason: `path ${parsed.pathname} is not a ${returnPage} page` };
   }
   return { url: `${parsed.origin}${parsed.pathname}`, reason: null };
 }

@@ -25,8 +25,10 @@ import config, {
   missingFgVariables, missingFgPaymentVariables, fgIsUnconfigured, fgCkycFlavour,
   missingIciciVariables, iciciIsUnconfigured,
   missingCholaVariables, cholaIsUnconfigured, missingCholaCkycVariables,
+  missingCholaFreechargeVariables, cholaFreechargeIsUnconfigured,
   iciciProductionPathsNotSet,
 } from './config/env.js';
+import { tokenEndpoint as cholaFreechargeTokenEndpoint } from './services/cholaFreecharge.service.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
 import { missingKycVariables } from './services/nivabupaKyc.service.js';
@@ -364,6 +366,9 @@ function reportChola(alias) {
   console.log('  PROPOSAL : POST /chola-ms/ProposalSave           (also /chola-ms/proposal)');
   console.log('  PAYMENT  : POST /chola-ms/PolicyGeneration       (also /chola-ms/issue) ⚠️ not idempotent');
   console.log('  DOCUMENT : POST /chola-ms/PolicySchedule         (also /chola-ms/policy/schedule)');
+  console.log('  PAY (FC) : POST /chola-ms/freecharge/initiate    Freecharge checkout');
+  console.log('  CALLBACK : ALL  /chola-ms/freecharge/return      ⚠️ FCPG return the buyer here');
+  console.log('  RESULT   : GET  /chola-ms/freecharge/result/:ref · POST /chola-ms/freecharge/status');
   console.log('  OPS      : /chola-ms/ops/*                       X-Ops-Key; screen at GET /chola-ms/ops');
   console.log('');
   if (alias) {
@@ -389,8 +394,29 @@ function reportChola(alias) {
   if (ckycMissing.length > 0) {
     console.warn(`  ⚠️  CKYC not configured — missing ${ckycMissing.join(', ')}. /chola-ms CKYC routes will fail.`);
   }
+  reportCholaFreecharge();
   if (missing.length > 0) {
     console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
+}
+
+// The Freecharge leg: hosts and whether the token URL is Chola's final one.
+// No client id, secret, Basic value or merchant id is printed.
+function reportCholaFreecharge() {
+  const fc = config.chola.freecharge;
+  if (cholaFreechargeIsUnconfigured()) {
+    console.log('  Freecharge         → not configured (/chola-ms/freecharge/* answer 503)');
+    return;
+  }
+  const missing = missingCholaFreechargeVariables();
+  console.log(`  Freecharge token   → ${fc.tokenUrl || fc.baseUrl ? cholaFreechargeTokenEndpoint() : '(not set)'}`
+    + `${fc.tokenUrl ? '' : ' (CHOLA_FREECHARGE_TOKEN_URL not set — Chola to share the final URL)'}`);
+  console.log(`  Freecharge checkout→ ${fc.checkoutUrl || '(CHOLA_FREECHARGE_CHECKOUT_URL not set)'}`);
+  console.log(`  Freecharge callback→ ${fc.callbackUrl || '(CHOLA_FREECHARGE_CALLBACK_URL not set)'}`);
+  if (missing.length > 0) {
+    console.error(`  ❌ Freecharge partially configured — missing ${missing.join(', ')}. /chola-ms/freecharge/* answer 503.`);
+  } else if (fc.callbackUrl && config.env !== 'development' && /^http:\/\/(localhost|127\.0\.0\.1)/.test(fc.callbackUrl)) {
+    console.warn('  ⚠️  CHOLA_FREECHARGE_CALLBACK_URL is a localhost address: FCPG cannot return a buyer to it.');
   }
 }
 

@@ -31,8 +31,14 @@ on a separate e-policy portal with its own auth.
 | `src/constants/chola.constants.js` | Products, operations, payment modes, per-product field spellings |
 | `src/ops/chola.html`, `src/ops/chola-ops.js` | Ops screen (`GET /chola-ms/ops`) |
 | `migrations/005_create_chola_policy_generation_tables.sql` | The two tables |
-| `src/config/{defaults,env,validate}.js` | `CHOLA_DEFAULTS`, `config.chola`, boot report |
+| `src/services/cholaFreechargePayment.service.js` | Freecharge flow: checkout, callback, verification, issuance, ops (see *Freecharge*) |
+| `src/services/cholaFreecharge.service.js` | Freecharge OAuth2 token cache + one call per collection request |
+| `src/helpers/cholaFreecharge.helper.js` | Freecharge request builders, response readers, payment verdict (pure) |
+| `src/repositories/cholaFreecharge.repository.js` | `health_chola_freecharge_payments` |
+| `migrations/007_create_chola_freecharge_payments.sql` | The Freecharge payments table |
+| `src/config/{defaults,env,validate}.js` | `CHOLA_DEFAULTS`, `CHOLA_FREECHARGE_DEFAULTS`, `config.chola`, boot report |
 | `scripts/test-chola.js` | Offline suite against a mock Chola (`npm run test:chola`) |
+| `scripts/test-chola-freecharge.js` | Offline Freecharge suite against a mock gateway (`npm run test:chola:freecharge`) |
 | `scripts/smoke-chola.js` | Read-only UAT smoke (`npm run smoke:chola [token\|quote\|all]`) |
 | `scripts/uat-chola-apd.js` | One Flexi Health case end to end in APD — ⚠️ spends UAT deposit (`npm run uat:chola:apd`) |
 
@@ -75,9 +81,19 @@ under the short name the SPA's `api/chola.js` calls. Same handler.
 | GET  | `/chola-ms/ops/PolicyGeneration/logs` | `/api/chola/ops/PolicyGeneration/logs` | — |
 | GET  | `/chola-ms/ops/proposals/:no/pdf` | `/api/chola/ops/proposals/:no/pdf` | — |
 | GET  | `/chola-ms/ops` | `/ops/chola` | the ops screen |
+| POST | `/chola-ms/freecharge/initiate` | — | Freecharge `crypto/encrypt` (checkout) |
+| ALL  | `/chola-ms/freecharge/return` | — | ⚠️ FCPG's callback; `crypto/decrypt` + `checkout/txn/status` |
+| GET  | `/chola-ms/freecharge/result/:ref` | — | — (reads the payment row) |
+| POST | `/chola-ms/freecharge/status` | — | `checkout/txn/status` ("check again") |
+| GET  | `/chola-ms/ops/freecharge/payments[/:merchantTxnId]` | — | — |
+| POST | `/chola-ms/ops/freecharge/payments/:merchantTxnId/status` | — | `checkout/txn/status` |
+| POST | `/chola-ms/ops/freecharge/payments/:merchantTxnId/issue` | — | PolicyGeneration (PG_DIRECT) |
+| POST | `/chola-ms/ops/freecharge/payments/:merchantTxnId/refund` | — | Freecharge `refund` |
+| POST | `/chola-ms/ops/freecharge/paylink` · `…/paylink/status` | — | Freecharge `paylinkqr/create` · `payment/link/status` |
 
 Every route is also served under `/health/chola-ms/*`. Token:
-`POST /oauth2/token`; CKYC auth: `POST /epolicyv3api/api/KYC/CholaMS_CKYC_Auth`.
+`POST /oauth2/token`; CKYC auth: `POST /epolicyv3api/api/KYC/CholaMS_CKYC_Auth`;
+Freecharge token: `CHOLA_FREECHARGE_TOKEN_URL` (its own OAuth2 client).
 
 `<product>` by the body's `product` key (stripped before sending; default
 `FLEXI_HEALTH`):
@@ -121,11 +137,14 @@ through for Chola to name.
 
 ## Payment and the return
 
-**There is no Chola payment callback route, and none is missing.**
-PolicyGeneration takes no return URL. Chola's hosted page returns the buyer to
-the SPA's own `/chola-return` page, which reads whatever Chola append; Chola
-publish no status API to confirm it against. The standalone service had no
-callback either.
+Two ways to collect the premium: Chola's own hosted page (PolicyGeneration with
+`PayMode: "Chola"`, below — blocked by the unreachable URL), or **Freecharge**,
+where Chola's merchant collects it on FCPG and the policy is issued afterwards
+(see *Freecharge* — the one Chola payment callback this service has).
+
+With `PayMode: "Chola"`, PolicyGeneration takes no return URL. Chola's hosted
+page returns the buyer to the SPA's own `/chola-return` page, which reads
+whatever Chola append; Chola publish no status API to confirm it against.
 
 ⚠️ **The PG payment URL is not reachable.** With `PayMode: "Chola"`, `URL` comes
 back as `http://10.105.63.69/websales/frmTermsandCondition.aspx?SOURCE=INTEGRATION&TRANSID=<proposal>`
@@ -191,6 +210,124 @@ and `{ product, GenconProposalNumber, Amount }` issues in the configured mode.
 The ops routes answer 503 while `CHOLA_OPS_KEY` is unset and 401 without the
 right key. The screen at `GET /chola-ms/ops` (or `/health/chola-ms/ops`) lists
 tagged proposals, their evidence and stored PDFs.
+
+## Freecharge
+
+Chola collect premium through the **Freecharge payment gateway (FCPG)**, under
+Chola's own merchant (UAT `MER6dca324492`), via Chola's WSO2 gateway. Sources:
+Chola's *Free Charge APIs* Postman collection (every request body below), and
+FCPG's public developer docs (freechargepg.in/developer) for what the
+collection leaves out — the hosted-checkout form POST, the callback envelope
+and the status-code table.
+
+Chola's wrapper does FCPG's signing and JWS+JWE encryption with the merchant's
+keys: this service holds no Freecharge key, sends the collection's plain JSON
+to `crypto/encrypt`, and reads plain JSON back from `crypto/decrypt`.
+
+**Its own OAuth2 client.** The product client (`CHOLA_CLIENT_ID`) is refused on
+every `/endpoint/free-charge/*` path with WSO2 `900908` "API Subscription
+validation failed" (UAT, 2026-11-17). `CHOLA_FREECHARGE_CLIENT_ID` /
+`_CLIENT_SECRET` (or `CHOLA_FREECHARGE_BASIC_AUTH`, the Basic value as issued)
+are a separate client; the token URL is its own variable because Chola are to
+share the final one separately.
+
+### The flow
+
+```
+ProposalSave ──► initiate ──► FCPG checkout ──► return (callback) ──► txn/status ──► PolicyGeneration (PG_DIRECT) ──► result
+  premium          encrypt      browser POSTs     decrypt              decides          PGID = txnReferenceId          page polls
+                                clientId+encData
+```
+
+1. **`POST /chola-ms/freecharge/initiate`** `{ product?, GenconProposalNumber,
+   Amount, frontendReturnUrl }` — `Amount` is ProposalSave's re-priced
+   premium; `frontendReturnUrl` the buyer's `/chola-return` page on an allowed
+   origin (refused otherwise — a buyer who has paid must land where the result
+   can be read). Earlier checkouts for the proposal are settled first (below).
+   A payment row is written (fails closed), then `crypto/encrypt` seals the
+   collection's checkout body:
+   `{ merchantId, merchantTxnId, merchantTxnAmount, timestamp, merchantOrderId, callbackUrl, currency }`
+   — `merchantTxnId` fresh per attempt (`NC<proposal>-<time><rand>`, FCPG's
+   `^[a-zA-Z0-9_-]{1,30}$`), `merchantOrderId` the proposal, `timestamp` epoch
+   seconds, `callbackUrl` = `CHOLA_FREECHARGE_CALLBACK_URL?ref=<opaque ref>`.
+   Answers `data.checkout = { url: CHOLA_FREECHARGE_CHECKOUT_URL, method: "POST",
+   fields: { clientId, encData } }` and `data.ref`.
+2. The browser form-POSTs `clientId` + `encData` to FCPG's hosted checkout
+   (`…/payment/v1/checkout`, `application/x-www-form-urlencoded`).
+3. **`ALL /chola-ms/freecharge/return?ref=…`** — FCPG send the buyer back with
+   `{ clientId, encData }`. `crypto/decrypt` opens it; the row is found by `ref`
+   (or the decrypted `merchantTxnId`); the raw callback is stored;
+   **`checkout/txn/status`** `{ merchantId, merchantTxnId, txnReferenceId? }`
+   decides. 303 to the row's `/chola-return` page with `?ref=` only — no payment
+   detail in a URL. A callback matching nothing goes to
+   `CHOLA_FREECHARGE_FRONTEND_RETURN_URL?error=callback`.
+4. On a confirmed SUCCESS, **PolicyGeneration** goes out in the background
+   through the existing send-once path (`cholaPolicyIssuer.issue`, mode
+   `PG_DIRECT` whatever `CHOLA_PAYMENT_MODE` says, `PGID` = FCPG's
+   `txnReferenceId`, `source` `freecharge` in the evidence log), then
+   PolicySchedule.
+5. **`GET /chola-ms/freecharge/result/:ref`** is what the return page reads;
+   **`POST /chola-ms/freecharge/status { ref }`** ("check again") re-asks FCPG
+   about a payment not yet settled — the callback may never have come — and
+   starts issuance for a paid one not yet tried.
+
+### What decides a payment
+
+The callback is never trusted alone; `txn/status` decides, by FCPG's table:
+
+| txn/status says | Row becomes |
+|---|---|
+| `SPG-0000`, same `merchantTxnId`, amount = premium to the paisa, a `txnReferenceId` | `SUCCESS` → issuance |
+| `SPG-0000` but another transaction, a different amount, no amount or no `txnReferenceId` | `NEEDS_REVIEW` — never issued automatically |
+| a FAILED code while the callback said `SPG-0000` | `NEEDS_REVIEW` |
+| a FAILED code (incl. `SPG-0025` "Transaction does not exist", `SPG-0150` cancelled) | `FAILED` |
+| a PENDING code (`SPG-0002`, `SPG-5218`, `SPG-8000`, …) | `PENDING` |
+| a code that only refuses **our request** (`SPG-0005` signature, `SPG-0010` fields, `SPG-0041` merchant not authorised, …), no code, or no answer | `PENDING` — proves nothing about the money |
+
+`SUCCESS` is never undone by a later check. `NEEDS_REVIEW` changes only through
+the ops status route.
+
+**A proposal is paid once.** Before a new checkout every earlier one must be
+known to have failed: a paid one refuses (and gets its issuance started); one
+`INITIATED`/`PENDING` is asked about first and refuses unless FCPG now say it
+failed — an abandoned checkout answers `SPG-0025`.
+
+**Issuance** (`issue_status`): `IN_PROGRESS` → `POLICY_ISSUED` | `ISSUE_FAILED`
+(Chola refused, or it never left — ops may re-send) | `NEEDS_REVIEW` (outcome
+unknown — never re-sent). The `health_chola_proposals` claim still refuses a
+second PolicyGeneration for one proposal; if one already went out, its outcome
+is mirrored.
+
+### Ops
+
+Behind `X-Ops-Key`, by `merchantTxnId`:
+
+- `GET /chola-ms/ops/freecharge/payments` · `…/payments/:merchantTxnId` (with
+  the raw and decrypted callback and FCPG's answers)
+- `POST …/payments/:id/status` — re-ask FCPG (`NEEDS_REVIEW` included); issues if paid
+- `POST …/payments/:id/issue` — re-send PolicyGeneration from `ISSUE_FAILED`
+- `POST …/payments/:id/refund` `{ refundAmount?, refundType? OFFLINE|ONLINE }` —
+  the collection's refund body (`merchantRefundTxnId` `RF…`), sent once; refused
+  while a policy is issued or being issued against the payment
+- `POST /chola-ms/ops/freecharge/paylink` · `…/paylink/status` — the
+  collection's pay-link requests, passed through with merchant, timestamp and
+  currency filled in. **Not tied to issuance**: the pay-link callback and the
+  link-status success response are not documented yet.
+
+### Pending from Chola / to confirm on UAT
+
+- The Freecharge OAuth2 client (or its Basic value) and the **final token URL**.
+- `crypto/encrypt` and `crypto/decrypt` **response shapes** — the collection
+  saved none. Read as FCPG's `{ clientId, encData }` envelope (then a `data`
+  wrapper, then a bare JWS); anything else is a `PARSE_ERROR` naming the keys.
+- That FCPG keep the `?ref=` on `callbackUrl`, and whether the callback is the
+  documented form POST (the route takes any method, query or body).
+- PolicyGeneration for a Freecharge payment: `PayMode: "Direct"`,
+  `PGID` = `txnReferenceId`, `BankName` `3719`, `PaymentID` empty — the existing
+  `PG_DIRECT` body. Chola to confirm the tagging fields they expect.
+- Whether FCPG can also post a server-to-server webhook (none is in the
+  collection); today a buyer who closes the tab before the redirect is found by
+  "check again" or ops status.
 
 ## Responses
 
@@ -262,9 +399,20 @@ the standalone service's, so its `CHOLA_*` block copies across.
 | `CHOLA_DEBUG` | | `0` | full bodies to stdout (never the token or CKYC auth call) |
 | `CHOLA_CORS_ORIGINS` | | shared list | |
 | `CHOLA_*_PATH` | | kit paths | contract; leave unset |
+| `CHOLA_FREECHARGE_BASE_URL` | | `CHOLA_BASE_URL` | Chola's gateway for the Freecharge APIs |
+| `CHOLA_FREECHARGE_TOKEN_URL` | | base + `/oauth2/token` | absolute; **set when Chola share the final token URL** |
+| `CHOLA_FREECHARGE_CLIENT_ID` / `_CLIENT_SECRET` | ✅ for Freecharge | — | the Freecharge OAuth2 client (not the product one) |
+| `CHOLA_FREECHARGE_BASIC_AUTH` | or ↑ | — | the Basic value as Chola issued it; wins over the pair |
+| `CHOLA_FREECHARGE_MERCHANT_ID` | ✅ for Freecharge | — | UAT `MER6dca324492` |
+| `CHOLA_FREECHARGE_CHECKOUT_URL` | ✅ for Freecharge | — | UAT `https://sandbox-axispg.freecharge.in/payment/v1/checkout`, live `https://secure-axispg.freecharge.in/payment/v1/checkout` |
+| `CHOLA_FREECHARGE_CALLBACK_URL` | ✅ for Freecharge | — | public `https://<this service>/health/chola-ms/freecharge/return` |
+| `CHOLA_FREECHARGE_FRONTEND_RETURN_URL` | | — | where an unmatched callback sends the buyer (a `/chola-return` page) |
+| `CHOLA_FREECHARGE_FRONTEND_RETURN_ORIGINS` | | `NIVABUPA_FRONTEND_RETURN_ORIGINS` | origins whose `/chola-return` page a checkout may name |
+| `CHOLA_FREECHARGE_CURRENCY` | | `INR` | |
+| `CHOLA_FREECHARGE_*_PATH` | | collection paths | contract; leave unset |
 
 UAT → production is the variables above plus the production credentials. No
-source change.
+source change. Startup refuses production with a UAT/sandbox Freecharge host.
 
 ## Database
 
@@ -274,6 +422,13 @@ source change.
 standalone service's own, so where both services share a schema the existing
 tables — and the proposals already claimed in them — are kept, and a proposal
 claimed there is still never sent twice from here.
+
+`007_create_chola_freecharge_payments.sql` adds `health_chola_freecharge_payments`:
+one row per Freecharge checkout, written before the buyer is sent to pay —
+`merchant_txn_id`, the opaque `return_token`, proposal, amount, FCPG's verdict
+(`status`, `status_code`, `txn_reference_id`, `paid_amount`), the raw callback
+ciphertext and its decryption, the last `txn/status` answer, `issue_status` and
+policy number, and any refund. Additive and idempotent.
 
 Every call is also audited into `nivabupa_api_transactions` with `api_name`
 `CHOLA_*`, `correlation_id` the Gencon proposal/policy number (or `App_Ref_No`
@@ -286,8 +441,9 @@ One line per request (operation, URL, attempt, product, proposal/policy number)
 and per response (status, duration), a parsed summary per operation, and a
 failure block whenever a call is refused or given up on. Bodies only under
 `CHOLA_DEBUG=1`. Never logged: the token, `CHOLA_CLIENT_SECRET`, the Basic pair,
-`CHOLA_CKYC_PRIVATE_KEY`, the CKYC TokenKey, `CHOLA_OPS_KEY`.
-`npm run test:chola` asserts it.
+`CHOLA_CKYC_PRIVATE_KEY`, the CKYC TokenKey, `CHOLA_OPS_KEY`, the Freecharge
+token, `CHOLA_FREECHARGE_CLIENT_SECRET` or `CHOLA_FREECHARGE_BASIC_AUTH`.
+`npm run test:chola` and `npm run test:chola:freecharge` assert it.
 
 ## Frontend changes needed
 
@@ -326,6 +482,16 @@ The `/chola-return` page needs no change.
   premium calls on 2026-09-09). Not retried; the SPA tells the buyer to retry.
 - **Super Topup ProposalSave times out** — `genconpreprod` is not reachable from
   every network; it needs Chola-side IP whitelisting.
+- **Freecharge `AUTH_ERROR` "API Subscription validation failed" (900908)** — the
+  client is not subscribed to the Freecharge APIs. The product client
+  (`CHOLA_CLIENT_ID`) is not; set `CHOLA_FREECHARGE_CLIENT_ID`/`_SECRET` (or
+  `_BASIC_AUTH`) to the Freecharge client Chola issued.
+- **Freecharge `PARSE_ERROR` "encrypt answered no encData"** — `crypto/encrypt`
+  answered a shape this service does not read; `details.keys` names its keys.
+- **A buyer paid but the page says pending** — "check again" (`POST
+  /chola-ms/freecharge/status`) or the ops status route asks FCPG again;
+  `NEEDS_REVIEW` rows are never issued automatically — see the ops payment
+  detail for the reason.
 
 ## UAT evidence — APD
 
@@ -344,4 +510,9 @@ upper bound on PolicyGeneration response time.
 - `npm run test:chola` — offline checks against a mock speaking Chola's wire
   format, carrying the standalone service's three Chola suites
   (`cholaAdapter`, `cholaAllApis`, `cholaApd`) plus the migration checks.
+- `npm run test:chola:freecharge` — the Freecharge flow end to end against a
+  mock of Chola's gateway: the collection's bodies, every payment verdict,
+  send-once issuance, ops, and no credential in the logs.
 - `npm run verify` — every `/chola-ms` route registered at both mounts.
+- **Not yet run against UAT**: the Freecharge OAuth2 client has not been issued
+  to us (2026-11-17), so no live encrypt/checkout/callback has been made.

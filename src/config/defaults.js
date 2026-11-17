@@ -338,6 +338,32 @@ export const CHOLA_DEFAULTS = {
   jsonBodyLimit: '5mb',
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Chola MS — the Freecharge payment gateway (FCPG) Chola collect premium
+// through, reached on Chola's own WSO2 gateway. The merchant is Chola's.
+//
+// Same rule as CHOLA_DEFAULTS: no host, no client id/secret, no merchant id and
+// no checkout or callback URL here. What IS here is contract — the request
+// paths from Chola's "Free Charge APIs" Postman collection, appended to
+// CHOLA_FREECHARGE_BASE_URL (CHOLA_BASE_URL when unset) — and the currency the
+// collection sends. Paths stay overridable (CHOLA_FREECHARGE_*_PATH).
+// ─────────────────────────────────────────────────────────────────────────────
+export const CHOLA_FREECHARGE_DEFAULTS = {
+  paths: {
+    // Used only while CHOLA_FREECHARGE_TOKEN_URL is unset: Chola are to share
+    // the final token URL separately.
+    token: '/oauth2/token',
+    encrypt: '/endpoint/free-charge/v1/crypto/encrypt',
+    decrypt: '/endpoint/free-charge/v1/crypto/decrypt',
+    txnStatus: '/endpoint/free-charge/v1/checkout/txn/status',
+    payLinkCreate: '/endpoint/free-charge/v1/paylinkqr/create',
+    payLinkStatus: '/endpoint/free-charge/v1/payment/link/status',
+    refund: '/endpoint/free-charge/v1/refund',
+  },
+
+  currency: 'INR',
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.

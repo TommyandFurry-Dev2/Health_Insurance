@@ -33,6 +33,8 @@ import config, {
   missingCholaVariables,
   cholaIsUnconfigured,
   missingCholaCkycVariables,
+  missingCholaFreechargeVariables,
+  cholaFreechargeIsUnconfigured,
   iciciProductionPathsNotSet,
   iciciProductionIsUnconfigured,
   iciciEnvironmentRefusal,
@@ -319,6 +321,13 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
       console.warn('       Quote, proposal and PolicyGeneration work; the CKYC routes do not.');
       console.warn('');
     }
+    const cholaFreechargeMissing = missingCholaFreechargeVariables();
+    if (!cholaFreechargeIsUnconfigured() && cholaFreechargeMissing.length > 0) {
+      console.warn('  ⚠️  Chola MS Freecharge payments are PARTIALLY configured — missing:');
+      console.warn(`       ${cholaFreechargeMissing.join(', ')}`);
+      console.warn('       The /chola-ms/freecharge endpoints will answer 503 until these are set.');
+      console.warn('');
+    }
     if (!CHOLA_PAYMENT_MODES.includes(config.chola.paymentMode)) {
       console.warn(`  ⚠️  CHOLA_PAYMENT_MODE "${config.chola.paymentMode}" is not one of ${CHOLA_PAYMENT_MODES.join(', ')}.`);
       console.warn('       Backend-built PolicyGeneration (the ops route) will answer 503.');
@@ -333,12 +342,16 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
     }
     // The accident this whole report exists for: NODE_ENV says production, a
     // Chola host says UAT. The Super Topup host is "genconpreprod", which none of
-    // looksLikeUat()'s words cover, so pre-prod is named explicitly.
+    // looksLikeUat()'s words cover, so pre-prod is named explicitly — as is
+    // Freecharge's checkout, whose test host is "sandbox-axispg".
     const cholaUatEndpoints = [
       ['CHOLA_BASE_URL', config.chola.baseUrl],
       ['CHOLA_CKYC_BASE_URL', config.chola.ckyc.baseUrl],
       ['CHOLA_TOPUP_PROPOSAL_URL', config.chola.topupProposalUrl],
-    ].filter(([, value]) => looksLikeUat(value) || /preprod/i.test(value || '')).map(([name]) => name);
+      ['CHOLA_FREECHARGE_BASE_URL', config.chola.freecharge.baseUrl],
+      ['CHOLA_FREECHARGE_TOKEN_URL', config.chola.freecharge.tokenUrl],
+      ['CHOLA_FREECHARGE_CHECKOUT_URL', config.chola.freecharge.checkoutUrl],
+    ].filter(([, value]) => looksLikeUat(value) || /preprod|sandbox/i.test(value || '')).map(([name]) => name);
     if (isProduction && cholaUatEndpoints.length > 0) {
       console.error('  ❌ NODE_ENV=production but these Chola MS endpoints still point at UAT/pre-prod:');
       console.error(`       ${cholaUatEndpoints.join(', ')}`);

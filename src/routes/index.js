@@ -312,7 +312,8 @@ export function createIciciRouter() {
 //   * body limit — CHOLA_JSON_BODY_LIMIT, 5mb by default: the limit the working
 //     implementation parsed every Chola body under.
 //   * urlencoded — extended:false, matching the working implementation's
-//     parser. No Chola route expects a form body today.
+//     parser. Freecharge's callback (/chola-ms/freecharge/return) is the one
+//     Chola route that receives a form body: FCPG post { clientId, encData }.
 //   * no rate limiting — same policy as every other insurer router.
 //   * its own CORS list — CHOLA_CORS_ORIGINS, falling back to the shared one.
 //     The ops routes' X-Ops-Key is a non-safelisted header; cors() reflects the

@@ -53,6 +53,11 @@ const CHOLA_API_NAMES = {
   CKYC_VERIFY: 'CHOLA_CKYC_VERIFY',
   CKYC_QUERY: 'CHOLA_CKYC_QUERY',
   OPS_POLICY_GENERATION: 'CHOLA_OPS_POLICY_GENERATION',
+  FREECHARGE_CHECKOUT: 'CHOLA_FREECHARGE_CHECKOUT',
+  FREECHARGE_CALLBACK: 'CHOLA_FREECHARGE_CALLBACK',
+  FREECHARGE_STATUS: 'CHOLA_FREECHARGE_TXN_STATUS',
+  FREECHARGE_REFUND: 'CHOLA_FREECHARGE_REFUND',
+  FREECHARGE_PAYLINK: 'CHOLA_FREECHARGE_PAYLINK',
 };
 
 /**
@@ -130,6 +135,98 @@ const CHOLA_PROPOSAL_STATUS = {
   NEEDS_REVIEW: 'NEEDS_REVIEW',
 };
 
+// ── Freecharge (FCPG) ───────────────────────────────────────────────────────
+//
+// The gateway Chola collect premium through (services/cholaFreechargePayment
+// .service.js). The request bodies are Chola's "Free Charge APIs" Postman
+// collection; the status codes are FCPG's published table
+// (https://www.freechargepg.in/developer/bank-codes).
+
+/**
+ * health_chola_freecharge_payments.status — what we know of one checkout.
+ *
+ *   INITIATED     encrypted and handed to the browser; no answer yet
+ *   PENDING       FCPG say pending, or could not be asked
+ *   SUCCESS       FCPG's txn/status said SPG-0000 for exactly this amount
+ *   FAILED        FCPG said failed (or the checkout never left us)
+ *   NEEDS_REVIEW  money may have moved but something does not add up (amount
+ *                 or transaction mismatch, callback and status disagree) —
+ *                 reconciled by a person, never issued automatically
+ */
+const CHOLA_FREECHARGE_STATUS = {
+  INITIATED: 'INITIATED',
+  PENDING: 'PENDING',
+  SUCCESS: 'SUCCESS',
+  FAILED: 'FAILED',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+};
+
+/**
+ * health_chola_freecharge_payments.issue_status — PolicyGeneration for a paid
+ * checkout (PG_DIRECT, tagged with FCPG's txnReferenceId).
+ *
+ *   IN_PROGRESS    claimed; PolicyGeneration going out
+ *   POLICY_ISSUED  Chola answered a policy number
+ *   ISSUE_FAILED   Chola refused it, or it never left — ops may re-send
+ *   NEEDS_REVIEW   outcome unknown; reconcile with Chola, never re-send
+ */
+const CHOLA_FREECHARGE_ISSUE_STATUS = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  POLICY_ISSUED: 'POLICY_ISSUED',
+  ISSUE_FAILED: 'ISSUE_FAILED',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+};
+
+const FREECHARGE_SUCCESS_CODE = 'SPG-0000';
+
+// Every code FCPG's table marks PENDING. Anything else that is not SPG-0000 is
+// FAILED by the same table.
+const FREECHARGE_PENDING_CODES = new Set([
+  'SPG-0002', // PENDING
+  'SPG-0011', // Socket Timeout
+  'SPG-0032', // Error while making HTTP call
+  'SPG-0038', // Client error
+  'SPG-0040', // SSL setup error
+  'SPG-0136', // No Settlement for given transactionId
+  'SPG-5000', // Internal server error
+  'SPG-5001', // Duplicate PG response
+  'SPG-5218', // Transaction Pending at Bank end
+  'SPG-8000', // Payment authorisation pending
+]);
+
+// Codes FCPG's table marks FAILED that describe OUR REQUEST being refused, not
+// the buyer's payment. On a status check they prove nothing about whether the
+// money moved, so they are read as "not confirmed" rather than as a failed
+// payment — a buyer told "failed" pays again.
+const FREECHARGE_REQUEST_ERROR_CODES = new Set([
+  'SPG-0003', // Invalid merchant id
+  'SPG-0004', // Signature is absent in the request
+  'SPG-0005', // Invalid signature
+  'SPG-0006', // Invalid session/ Session expired
+  'SPG-0008', // Error while validating request
+  'SPG-0009', // Transaction declined because of expired key
+  'SPG-0010', // Invalid request field[s]
+  'SPG-0013', // Request data has been tampered with
+  'SPG-0015', // Unable to process request
+  'SPG-0023', // Unable to process request
+  'SPG-0030', // Invalid combination of txn reference id & merchant txn
+  'SPG-0041', // Merchant not authorised for the API
+  'SPG-0044', // Merchant Id in request does not match that of in pay request
+  'SPG-0057', // Invalid argument
+  'SPG-0071', // Invalid data type
+  'SPG-0092', // Provide valid data
+  'SPG-0155', // Invalid timestamp field value
+  'SPG-0180', // Unable to process data
+  'SPG-0230', // Invalid combination of txn reference id & merchant txn id
+  'SPG-4000', // Bad request
+  'SPG-4001', // Merchant Id does not match that of transaction
+  'SPG-4204', // Error while Json processing
+]);
+
+// The return page's name on every frontend this backend serves (the new site
+// keeps the old app's route under its health base).
+const CHOLA_RETURN_PAGE = '/chola-return';
+
 export {
   CHOLA_PRODUCTS,
   CHOLA_DEFAULT_PRODUCT,
@@ -140,4 +237,10 @@ export {
   CHOLA_POLICY_GENERATION_FIELDS,
   CHOLA_PG_BANK_CODE,
   CHOLA_PROPOSAL_STATUS,
+  CHOLA_FREECHARGE_STATUS,
+  CHOLA_FREECHARGE_ISSUE_STATUS,
+  FREECHARGE_SUCCESS_CODE,
+  FREECHARGE_PENDING_CODES,
+  FREECHARGE_REQUEST_ERROR_CODES,
+  CHOLA_RETURN_PAGE,
 };

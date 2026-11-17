@@ -277,6 +277,19 @@ const EXPECTED_ROUTES = [
   'GET /chola-ms/ops/proposals',
   'GET /chola-ms/ops/proposals/:proposalNo/PolicyGeneration',
   'GET /chola-ms/ops/proposals/:proposalNo/pdf',
+  // Chola's Freecharge payment. ⚠️ The return is the callbackUrl FCPG send the
+  // buyer back to; router.all() registers it as Express's `_all`.
+  'POST /chola-ms/freecharge/initiate',
+  '_ALL /chola-ms/freecharge/return',
+  'GET /chola-ms/freecharge/result/:ref',
+  'POST /chola-ms/freecharge/status',
+  'GET /chola-ms/ops/freecharge/payments',
+  'GET /chola-ms/ops/freecharge/payments/:merchantTxnId',
+  'POST /chola-ms/ops/freecharge/payments/:merchantTxnId/status',
+  'POST /chola-ms/ops/freecharge/payments/:merchantTxnId/issue',
+  'POST /chola-ms/ops/freecharge/payments/:merchantTxnId/refund',
+  'POST /chola-ms/ops/freecharge/paylink',
+  'POST /chola-ms/ops/freecharge/paylink/status',
   'GET /healthz',
   'GET /readyz',
 ];

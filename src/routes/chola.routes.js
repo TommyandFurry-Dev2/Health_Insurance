@@ -25,9 +25,11 @@ const router = express.Router();
 //   /api/chola/ops/*                                  →  /chola-ms/ops/*
 //   GET  /ops/chola  (ops screen)                     →  GET  /chola-ms/ops
 //
-// There is no Chola payment callback route, and none is missing: PolicyGeneration
-// takes no return URL, and Chola's hosted payment page returns the buyer to the
-// SPA's /chola-return page directly. Under APD there is no payment page at all.
+// PolicyGeneration with PayMode "Chola" takes no return URL — Chola's hosted
+// page returns the buyer to the SPA's /chola-return page directly — and under
+// APD there is no payment page at all. The one payment callback is
+// Freecharge's (/chola-ms/freecharge/return, below), where Chola collect the
+// premium on FCPG and the policy is issued PG_DIRECT once FCPG confirm it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /chola-ms/config/test — can this process reach Chola at all? Prints no values.
@@ -64,6 +66,27 @@ router.post('/chola-ms/policy/schedule', controller.policySchedule);
 router.post('/chola-ms/ckyc/verify', controller.ckycVerify);
 router.post('/chola-ms/ckyc/query', controller.ckycQuery);
 
+// ── Freecharge (FCPG) payment ───────────────────────────────────────────────
+//
+// Chola collect the premium on Freecharge's hosted checkout; the policy is
+// issued (PolicyGeneration, PG_DIRECT) once FCPG's txn/status confirms it. See
+// services/cholaFreechargePayment.service.js. 503 until CHOLA_FREECHARGE_* is set.
+
+// The form the browser POSTs to FCPG, and the ref its return page reads.
+router.post('/chola-ms/freecharge/initiate', controller.freechargeInitiate);
+
+// ⚠️ FCPG return the buyer here, at the callbackUrl sent on every checkout. It
+// must stay publicly reachable at a stable address and must NEVER 404 or
+// rate-limit: a callback that lands on nothing is a buyer who paid.
+//
+// `all`, not `post`: the callback is documented as { clientId, encData }, but a
+// payment outcome is not the place to assume the method will never change.
+router.all('/chola-ms/freecharge/return', controller.freechargeReturn);
+
+// The return page: read the payment by its opaque ref, and "check again".
+router.get('/chola-ms/freecharge/result/:ref', controller.freechargeResult);
+router.post('/chola-ms/freecharge/status', controller.freechargeRecheck);
+
 // ── Ops: backend-built PolicyGeneration (APD) ───────────────────────────────
 //
 // Never called by the website. X-Ops-Key guarded, and switched off (503) while
@@ -80,5 +103,15 @@ router.get('/chola-ms/ops/PolicyGeneration/logs', controller.requireOpsKey, cont
 router.get('/chola-ms/ops/proposals', controller.requireOpsKey, controller.opsListProposals);
 router.get('/chola-ms/ops/proposals/:proposalNo/PolicyGeneration', controller.requireOpsKey, controller.opsProposalLogs);
 router.get('/chola-ms/ops/proposals/:proposalNo/pdf', controller.requireOpsKey, controller.opsProposalPdf);
+
+// Freecharge reconciliation: the payments, a fresh status, a deliberate
+// issuance re-send, a refund, and FCPG's pay links.
+router.get('/chola-ms/ops/freecharge/payments', controller.requireOpsKey, controller.opsFreechargePayments);
+router.get('/chola-ms/ops/freecharge/payments/:merchantTxnId', controller.requireOpsKey, controller.opsFreechargePayment);
+router.post('/chola-ms/ops/freecharge/payments/:merchantTxnId/status', controller.requireOpsKey, controller.opsFreechargeVerify);
+router.post('/chola-ms/ops/freecharge/payments/:merchantTxnId/issue', controller.requireOpsKey, controller.opsFreechargeIssue);
+router.post('/chola-ms/ops/freecharge/payments/:merchantTxnId/refund', controller.requireOpsKey, controller.opsFreechargeRefund);
+router.post('/chola-ms/ops/freecharge/paylink', controller.requireOpsKey, controller.opsFreechargePayLink);
+router.post('/chola-ms/ops/freecharge/paylink/status', controller.requireOpsKey, controller.opsFreechargePayLinkStatus);
 
 export default router;

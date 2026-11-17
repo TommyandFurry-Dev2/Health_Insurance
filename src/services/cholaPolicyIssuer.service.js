@@ -86,9 +86,11 @@ function cholaStore() {
   return deps.store;
 }
 
-/** The configured mode, refused if unknown — or if APD is set in production. */
-function paymentMode() {
-  const mode = config.chola.paymentMode;
+/**
+ * The configured mode — or the one a caller names (the Freecharge path always
+ * issues PG_DIRECT) — refused if unknown, or if APD is asked for in production.
+ */
+function paymentMode(mode = config.chola.paymentMode) {
   if (!CHOLA_PAYMENT_MODES.includes(mode)) {
     throw configError(`CHOLA_PAYMENT_MODE "${mode}" is not one of ${CHOLA_PAYMENT_MODES.join(', ')}`);
   }
@@ -225,12 +227,14 @@ async function issueFromDeposit(productKey, { GenconProposalNumber, Amount }) {
 /**
  * @param {{product?: string, GenconProposalNumber: string, Amount: string|number,
  *          paymentReference?: string}} input
- * @param {{source?: 'ops'|'website'}} [opts] who asked, for the evidence log
+ * @param {{source?: 'ops'|'website'|'freecharge', mode?: string}} [opts] who
+ *   asked, for the evidence log; `mode` overrides CHOLA_PAYMENT_MODE for this
+ *   one call (Freecharge: PG_DIRECT, tagged with FCPG's txnReferenceId)
  */
-async function issue(input = {}, { source = 'ops' } = {}) {
+async function issue(input = {}, { source = 'ops', mode: requestedMode } = {}) {
   assertConfigured();
   const productKey = resolveProduct(input);
-  const mode = paymentMode();
+  const mode = paymentMode(requestedMode);
   const proposalNo = input.GenconProposalNumber != null ? String(input.GenconProposalNumber).trim() : '';
 
   // Everything that can be checked locally is checked before the claim, so a
