@@ -80,6 +80,15 @@ const PRODUCTS = {
     contractType: 'FHA',
     defaultPolicyType: 'HAI',
     memberShape: MEMBER_SHAPE.HEALTH_ABSOLUTE,
+    // FG's live FHA schema requires <Risk><OptedZone> straight after
+    // <IsFgEmployee>, though no FHA sample in the kit carries it — UAT
+    // 2026-11-17: "The element 'Risk' has invalid child element
+    // 'BranchReferenceID'. List of possible elements expected: 'OptedZone'."
+    // The kit shows the element only in its Health Unlimited sample. Sent
+    // empty, FG derive the zone from the address pincode and echo it in
+    // <InputParameters> (UAT 2026-11-17: 560038 and 400001 → Zone1 ₹12,479,
+    // 591305 → Zone2 ₹11,926, same risk otherwise).
+    optedZone: true,
   },
   ADVANTAGE_TOP_UP: {
     key: 'ADVANTAGE_TOP_UP',

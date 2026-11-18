@@ -130,6 +130,13 @@ function buildRootXml(p) {
   rk.ele('Installments').txt(risk.installments || 'FULL').up();
   rk.ele('PaymentType').txt(risk.paymentType || 'CC').up();
   rk.ele('IsFgEmployee').txt(risk.isFgEmployee || 'N').up();
+  // Health Absolute only — see PRODUCTS.HEALTH_ABSOLUTE.optedZone. FG's schema
+  // wants it in exactly this position. Sent empty, FG rate the zone of the
+  // address pincode themselves, so nothing is defaulted here: FG have not
+  // documented FHA's zone codes, and only a caller that has them sends one.
+  if (productDef.optedZone) {
+    rk.ele('OptedZone').txt(risk.optedZone || '').up();
+  }
   rk.ele('BranchReferenceID').txt(risk.branchReferenceId || '').up();
   rk.ele('FGBankBranchStaffID').txt(risk.fgBankBranchStaffId || '').up();
   rk.ele('BankStaffID').txt(risk.bankStaffId || '').up();
