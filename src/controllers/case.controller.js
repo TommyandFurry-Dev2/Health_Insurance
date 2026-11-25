@@ -3,6 +3,37 @@ import * as journeyService from '../services/journey.service.js';
 import * as proposalRepo from '../repositories/proposal.repository.js';
 import * as policyRepo from '../repositories/policy.repository.js';
 import config from '../config/env.js';
+import * as myPolicies from '../services/myPolicies.service.js';
+import { POLICY_STATUS } from '../constants/journey.constants.js';
+
+// My Policies: once Niva Bupa report the policy ISSUED, send the real policy
+// number to insuranceapi, keyed by the SOURCING_APPNO from the stored datapush
+// body (the same row the datapush's 'paid' call made). Never throws, never
+// delays the caller; repeat calls just update the same row.
+export async function reportIssuedToMyPolicies({ journeyId, payload, data, saved }) {
+  try {
+    if (!myPolicies.isConfigured()) return null;
+    const answered = policyRepo.extractPreIssuanceStatus(data);
+    const status = saved?.status || policyRepo.mapPolicyStatus(answered.status);
+    const policyNumber = saved?.policy_number || answered.policyNumber;
+    if (status !== POLICY_STATUS.ISSUED || !policyNumber) return null;
+
+    let proposal = journeyId ? await proposalRepo.findByJourneyId(journeyId) : null;
+    if (!proposal?.datapush_request_payload && payload?.ApplicationNumber) {
+      proposal = await proposalRepo.findByApplicationNumber(payload.ApplicationNumber);
+    }
+    if (!proposal?.datapush_request_payload) {
+      console.warn('⚠️  My Policies (proposal-status): issued, but no stored datapush body to key it by; not sent');
+      return null;
+    }
+    return await myPolicies.recordInBackground('proposal-status', myPolicies.nivaBupaPolicyBody(proposal.datapush_request_payload, {
+      stage: 'issued', policyNumber, mobile: payload?.MobileNumber,
+    }));
+  } catch (error) {
+    console.warn(`⚠️  My Policies (proposal-status): skipped: ${error.message}`);
+    return null;
+  }
+}
 
 // Pass-through: caller sends { ApplicationNumber, MobileNumber } (per
 // 24_PROPOSAL_STATUS_POLICY_DOWNLOAD.txt) — returns NivaBupa's
@@ -51,6 +82,8 @@ export const getProposalStatus = async (req, res) => {
       durationMs: Date.now() - startedAt,
       endpointUrl: config.nivabupa.caseApi.proposalStatusUrl,
     });
+
+    void reportIssuedToMyPolicies({ journeyId, payload, data, saved });
 
     return res.status(200).json({
       status: 'SUCCESS',

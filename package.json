@@ -18,6 +18,7 @@
     "db:setup": "node scripts/setup-database.js",
     "verify": "node scripts/verify.js",
     "verify:live": "node scripts/verify.js --live",
+    "test:my-policies": "node --test --test-force-exit --experimental-test-module-mocks scripts/test-my-policies.js",
     "test:nivabupa-return": "node --test --test-force-exit --experimental-test-module-mocks scripts/test-nivabupa-return-url.js scripts/test-nivabupa-return-local.js",
     "smoke:premium": "node scripts/smoke-premium.js",
     "smoke:journey": "node scripts/smoke-journey.js",

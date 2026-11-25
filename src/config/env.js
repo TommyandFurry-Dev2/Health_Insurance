@@ -902,6 +902,19 @@ const config = {
       || APP_DEFAULTS.corsOrigins,
   },
 
+  // My Policies on the website. After a Niva Bupa datapush (paid, policy code)
+  // and once proposal status reports the policy issued, the policy is sent to
+  // insuranceapi's POST /api/internal/health-policies (services/myPolicies.service.js),
+  // so the customer sees it even if their browser never came back to the site.
+  // Off while either is empty. Never blocks or fails a sale.
+  myPolicies: {
+    // e.g. https://insuranceapi.tommyandfurry.com/api/internal/health-policies
+    url: process.env.MY_POLICIES_INTAKE_URL || '',
+    // The same value as HEALTH_POLICY_SECRET on insuranceapi (both servers).
+    secret: process.env.HEALTH_POLICY_SECRET || '',
+    timeoutMs: Number(process.env.MY_POLICIES_INTAKE_TIMEOUT_MS) || 8000,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),

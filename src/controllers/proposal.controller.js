@@ -1,6 +1,8 @@
 import * as nivabupaApi from '../services/genericApi.service.js';
 import * as journeyService from '../services/journey.service.js';
 import * as nivabupaKyc from '../services/nivabupaKyc.service.js';
+import * as myPolicies from '../services/myPolicies.service.js';
+import { extractDataPush, isDataPushSuccess } from '../repositories/proposal.repository.js';
 import config from '../config/env.js';
 import {
   applyBusinessDefaults,
@@ -156,6 +158,16 @@ export const submitDataPush = async (req, res) => {
       endpointUrl: config.nivabupa.dataPushUrl,
       context: req.journeyContext,
     });
+
+    // My Policies: paid, with Niva Bupa's policy code, keyed by SOURCING_APPNO.
+    // In the background and read from Niva Bupa's own answer (not the DB save),
+    // so it never delays this response and still goes out if the save failed.
+    const pushed = extractDataPush(data);
+    if (isDataPushSuccess(pushed.status)) {
+      myPolicies.recordInBackground('datapush', myPolicies.nivaBupaPolicyBody(req.body, {
+        stage: 'paid', policyNumber: pushed.policyCode, numberKind: 'code',
+      }));
+    }
 
     return res.status(200).json({
       status: 'SUCCESS',
