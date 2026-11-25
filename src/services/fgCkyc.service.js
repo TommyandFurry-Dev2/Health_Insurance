@@ -233,10 +233,6 @@ async function postNlCkyc(opName, path, body) {
 
 // ── Normalisation ───────────────────────────────────────────────────────────
 
-function emptyToNull(value) {
-  return value === '' || value === undefined ? null : value;
-}
-
 function readBody(response, op) {
   const { status, data } = response;
   if (status < 200 || status >= 300) {
@@ -286,7 +282,11 @@ function normalizeGcKyc(response, op) {
     // The legacy `kyc_data` (outstanding sub-checks) has no equivalent; the
     // nearest thing is what the customer has actually uploaded so far.
     kycData: docs,
-    ckycNumber: emptyToNull(docs?.ckycNumber),
+    // VerifyCKYC answers a registry hit with `response.ckyc_number` (UAT
+    // 2026-11-25: ckyc_remarks "OK", kycStatus 1, no url); GetKycStatus carries
+    // it in uploadedDocuments. Read only from the latter, a registry hit looked
+    // unverified and the buyer was left waiting for a link that never comes.
+    ckycNumber: r.ckyc_number || r.ckycNumber || docs?.ckycNumber || null,
     customerType: r.customer_type || null,
     uploadUrl: r.url || null,
     // Not returned by GC-CKYC — the URL carries its own `access` token and FG
