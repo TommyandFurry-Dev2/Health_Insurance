@@ -27,7 +27,11 @@ import config, {
   missingCholaVariables, cholaIsUnconfigured, missingCholaCkycVariables,
   missingCholaFreechargeVariables, cholaFreechargeIsUnconfigured,
   iciciProductionPathsNotSet,
+  missingGalaxyVariables, galaxyIsUnconfigured,
 } from './config/env.js';
+import { galaxyClient } from './services/galaxyClient.service.js';
+import { keyStatus as galaxyKeyStatus } from './services/galaxyApi.service.js';
+import { startGxKeyScheduler } from './services/galaxyKeyScheduler.service.js';
 import { tokenEndpoint as cholaFreechargeTokenEndpoint } from './services/cholaFreecharge.service.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
@@ -40,15 +44,18 @@ export {
   createFgRouter,
   createIciciRouter,
   createCholaRouter,
+  createGalaxyRouter,
   createNivabupaProbeRouter,
   NIVABUPA_PATH_PREFIX,
   ITGI_PATH_PREFIX,
   FG_PATH_PREFIX,
   ICICI_PATH_PREFIX,
   CHOLA_PATH_PREFIX,
+  GALAXY_PATH_PREFIX,
 } from './routes/index.js';
 
 let sweeper = null;
+let galaxyKeyScheduler = null;
 
 // Called once after the HTTP listener is up.
 //
@@ -115,6 +122,8 @@ export async function startNivabupa() {
   reportFg(alias);
   reportIcici(alias);
   reportChola(alias);
+  reportGalaxy(alias);
+  startGalaxyKeyScheduler();
 
   const dbStatus = await db.verifyConnection();
   if (dbStatus.ok) {
@@ -420,6 +429,72 @@ function reportCholaFreecharge() {
   }
 }
 
+// The Galaxy Health half of the boot banner. Prints no values and no key
+// material: the routes, the host, and whether today's GHI key is in the store.
+function reportGalaxy(alias) {
+  console.log('');
+  console.log('🩺 Galaxy Health — Marvel (CBOS-GX V2)');
+  console.log('');
+
+  if (galaxyIsUnconfigured()) {
+    console.log('  Not configured — the /galaxy-health endpoints answer 503 naming what is missing.');
+    console.log('  Set GX_BASE_URL, GX_CHANNEL_ID, GX_APP_KEY and GX_GHI_STATIC_PUBLIC_KEY to enable.');
+    console.log('  Every other insurer is unaffected.');
+    return;
+  }
+
+  console.log('  CONFIG   : GET  /galaxy-health/config/test');
+  console.log('  QUOTE    : POST /galaxy-health/quickQuote        (also /galaxy-health/quote)');
+  console.log('  PROPOSAL : POST /galaxy-health/saveFullProposal  (also /galaxy-health/proposal)');
+  console.log('  PAYMENT  : POST /galaxy-health/createOrder       (also /galaxy-health/issue) → GHI payment page');
+  console.log('  DOCUMENT : POST /galaxy-health/{upload,download,search}Document');
+  console.log('  OPS      : POST /galaxy-health/ops/{getCurrentPubKey,getNextPubKey,rotateKeys}  X-Ops-Key');
+  console.log('  TOKEN    : POST /galaxy-health/payment/token        client credentials → Bearer (for GHI)');
+  console.log('  CALLBACK : ALL  /galaxy-health/payment/callback     ⚠️ GHI server-to-server, Bearer token');
+  console.log('  RETURN   : ALL  /galaxy-health/payment/return       ⚠️ GHI return the buyer here');
+  console.log('  RESULT   : GET  /galaxy-health/payment/status/:orderId');
+  console.log('');
+  if (alias) {
+    console.log(`  (every /galaxy-health route is also served under the ${alias} prefix)`);
+  }
+  let host = config.galaxy.baseUrl;
+  try { host = new URL(config.galaxy.baseUrl).host; } catch { /* printed as set */ }
+  console.log(`  Upstream host      → ${host || '(GX_BASE_URL not set)'}`);
+  console.log(`  Producer code      → ${config.galaxy.producerCode ? 'set' : 'not set (quickQuote sends the caller\'s)'}`);
+  console.log(`  Ops routes         → ${config.galaxy.opsKey ? 'enabled' : 'disabled (GX_OPS_KEY not set)'}`);
+  console.log(`  Payment token API  → ${config.galaxy.payment.clientId && config.galaxy.payment.clientSecret ? 'on' : 'off — callbacks are refused (GX_PAYMENT_CLIENT_ID / GX_PAYMENT_CLIENT_SECRET)'}`);
+  console.log(`  Payment return page→ ${config.galaxy.payment.frontendReturnUrl || '(GX_PAYMENT_FRONTEND_RETURN_URL not set — unmatched buyers see a neutral page)'}`);
+  try {
+    const keys = galaxyKeyStatus();
+    console.log(`  Key store          → ${keys.keyStoreDir}`);
+    console.log(`  Today's GHI key    → ${keys.todaysGhiKey ? `fetched (${keys.lastKeyReceivedAt})` : 'NOT fetched — business calls answer 503 until getCurrentPubKey succeeds'}`);
+    console.log(`  Key fetches today  → ${keys.keyFetchesToday} of 3`);
+  } catch (error) {
+    console.warn(`  ⚠️  Key store unreadable: ${error.message}`);
+  }
+  console.log(`  Key scheduler      → ${config.galaxy.keyScheduler ? `on, daily ${config.galaxy.keyRefreshAt} IST — run it on ONE process per GHI environment` : 'off (GX_KEY_SCHEDULER)'}`);
+  const missing = missingGalaxyVariables();
+  if (missing.length > 0) {
+    console.error(`  ❌ Partially configured — missing ${missing.join(', ')}. These endpoints answer 503.`);
+  }
+}
+
+// The daily GHI key fetch, on the one process that has GX_KEY_SCHEDULER on.
+// Never throws: a scheduler that cannot start must not stop the server.
+function startGalaxyKeyScheduler() {
+  if (!config.galaxy.keyScheduler || galaxyKeyScheduler) return;
+  const missing = missingGalaxyVariables();
+  if (missing.length > 0) {
+    console.error(`  ❌ GX_KEY_SCHEDULER is on, but Galaxy is not configured. Missing: ${missing.join(', ')}`);
+    return;
+  }
+  try {
+    galaxyKeyScheduler = startGxKeyScheduler(galaxyClient());
+  } catch (error) {
+    console.error(`  ❌ Galaxy key scheduler did not start: ${error.message}`);
+  }
+}
+
 // Ages idle journeys to ABANDONED and past-expiry ones to EXPIRED. Runs
 // in-process on an interval because there is no scheduler; unref() so a
 // pending timer never holds the process open during shutdown.
@@ -443,6 +518,10 @@ export async function stopNivabupa() {
   if (sweeper) {
     clearInterval(sweeper);
     sweeper = null;
+  }
+  if (galaxyKeyScheduler) {
+    galaxyKeyScheduler.stop();
+    galaxyKeyScheduler = null;
   }
   try {
     await db.closePool();

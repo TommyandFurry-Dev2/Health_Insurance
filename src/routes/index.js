@@ -14,6 +14,9 @@ import itgi_routes from './itgi.routes.js';
 import fg_routes from './fg.routes.js';
 import icici_routes from './icici.routes.js';
 import chola_routes from './chola.routes.js';
+import galaxy_routes from './galaxy.routes.js';
+import { paymentBodyError as galaxyPaymentBodyError } from '../controllers/galaxy.controller.js';
+import { GALAXY_PATH_PREFIX } from '../constants/galaxy.constants.js';
 import { resolveJourney } from '../middleware/journeyContext.js';
 import { logRequest } from '../middleware/requestLogger.js';
 import { errorHandler, notFound } from '../middleware/errorHandler.js';
@@ -77,6 +80,11 @@ export const ICICI_PATH_PREFIX = '/icici-lombard';
 // page returns the buyer to the SPA directly — so it is fixed only by the route
 // table (routes/chola.routes.js) and the SPA's api/chola.js.
 export const CHOLA_PATH_PREFIX = '/chola-ms';
+
+// Every Galaxy Health route lives under this prefix ('/galaxy-health', defined
+// in constants/galaxy.constants.js), and so does every piece of its middleware
+// — the same scoping property the prefixes above have, for the same reason.
+export { GALAXY_PATH_PREFIX };
 
 // verify: captures the exact raw bytes on req.rawBody before the body is
 // decoded — kept from the original backend for diagnosing the NivaBupa
@@ -345,6 +353,58 @@ export function createCholaRouter() {
   // app.js's own handlers instead of being answered here.
   router.use(CHOLA_PATH_PREFIX, notFound);
   router.use(CHOLA_PATH_PREFIX, errorHandler);
+
+  return router;
+}
+
+// The Galaxy Health router — a sibling of the insurer routers above, built the
+// same way and scoped just as tightly to its own prefix, so the integrations
+// fail independently: nothing here can affect another insurer's request, and a
+// deployment never given GX_* answers 503 on its own paths.
+//
+// Differences from the NivaBupa stack, each deliberate:
+//   * body limit — GX_JSON_BODY_LIMIT, 5mb by default: the limit the working
+//     implementation parsed every body under; uploadDocument carries a file.
+//   * no rate limiting — same policy as every other insurer router.
+//   * its own CORS list — GX_CORS_ORIGINS, falling back to the shared one. The
+//     ops routes' X-Ops-Key is a non-safelisted header; cors() reflects the
+//     requested headers on the preflight, so it is admitted.
+export function createGalaxyRouter() {
+  const router = express.Router();
+
+  // GHI's payment callback and redirect are read RAW, whatever their type,
+  // BEFORE the parsers below — which skip a request whose body was already
+  // read. A malformed or unexpected body therefore reaches the handler byte for
+  // byte and is captured before anything is decided about it, instead of being
+  // turned into a 500 by express.json() and lost.
+  const paymentPaths = [`${GALAXY_PATH_PREFIX}/payment/callback`, `${GALAXY_PATH_PREFIX}/payment/return`];
+  router.use(paymentPaths, express.raw({ type: () => true, limit: config.galaxy.jsonBodyLimit }));
+
+  router.use(
+    GALAXY_PATH_PREFIX,
+    cors(corsOptions(config.galaxy.corsOrigins)),
+    // The raw bytes are kept (req.rawBody) because GHI's payment redirect and
+    // callback are captured exactly as received while their format is unknown,
+    // and either may arrive as JSON, a form or plain text.
+    express.json({ limit: config.galaxy.jsonBodyLimit, verify: captureRawBody }),
+    express.urlencoded({ extended: false, limit: config.galaxy.jsonBodyLimit, verify: captureRawBody }),
+    express.text({ type: 'text/*', limit: config.galaxy.jsonBodyLimit, verify: captureRawBody }),
+    logRequest,
+  );
+
+  // The same optional journey resolution the other routers use. It DELETES
+  // journeyId / resumeToken from the body, so neither is encrypted into a GHI
+  // payload, which goes upstream verbatim.
+  router.use(GALAXY_PATH_PREFIX, resolveJourney);
+
+  router.use(galaxy_routes);
+
+  // A payment body that never reached its handler (too large, cut off): the
+  // callback answers an error GHI can act on, the buyer is still sent on.
+  router.use(paymentPaths, galaxyPaymentBodyError);
+
+  router.use(GALAXY_PATH_PREFIX, notFound);
+  router.use(GALAXY_PATH_PREFIX, errorHandler);
 
   return router;
 }

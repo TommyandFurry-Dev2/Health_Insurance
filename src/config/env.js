@@ -30,6 +30,7 @@ import {
   ICICI_DEFAULTS as IL,
   CHOLA_DEFAULTS as CH,
   CHOLA_FREECHARGE_DEFAULTS as CF,
+  GALAXY_DEFAULTS as GX,
   PROPOSAL_DEFAULTS,
   PAYMENT_DEFAULTS_VALUES,
   TIMEOUT_DEFAULTS,
@@ -915,6 +916,91 @@ const config = {
     timeoutMs: Number(process.env.MY_POLICIES_INTAKE_TIMEOUT_MS) || 8000,
   },
 
+  // ── Galaxy Health Insurance (GHI, CBOS-GX V2) ─────────────────────────────
+  // Moved from the working implementation (novacred-insurance-integrations,
+  // :4002) with its GX_* variable NAMES unchanged, so its .env block copies
+  // across as-is. GHI-issued values have no bundled default (see defaults.js):
+  //
+  //   * UAT    → GX_BASE_URL=https://uat-gxapi.galaxyhealth.com + the UAT
+  //              channel, appKey and static public key GHI issued
+  //   * PROD   → https://gxapi.galaxyhealth.com and GHI's production values
+  //   * unset  → the /galaxy-health endpoints answer 503 naming what is missing,
+  //              and every other insurer is unaffected
+  galaxy: {
+    // Logs the decrypt / retry lines too. Request and response bodies are never
+    // printed: a proposal is a person's KYC.
+    debug: process.env.GX_DEBUG === '1',
+
+    baseUrl: trimTrailingSlash(requiredEnv('GX_BASE_URL')) || null,
+    // Channel 2522 on UAT: the requestUID prefix and GH-CLIENT-CONTEXT channelID.
+    channelId: requiredEnv('GX_CHANNEL_ID') || null,
+    srcSystemName: envOr('GX_SRC_SYSTEM_NAME', GX.srcSystemName),
+    srcClientId: envOr('GX_SRC_CLIENT_ID', GX.srcClientId),
+    userAgent: envOr('GX_USER_AGENT', GX.userAgent),
+    // The server's public IP as GHI whitelisted it, sent in GH-CLIENT-CONTEXT.
+    clientIp: envOr('GX_CLIENT_IP', GX.clientIp),
+    // quickQuote's basicDetails.producerCode when the caller sends none
+    // (GHI00000001 since GHI's mail of 19 Nov 2026).
+    producerCode: requiredEnv('GX_PRODUCER_CODE') || '',
+    // "Authorization: Basic <appKey>" (GHI mail, 28 Oct 2026). A credential.
+    appKey: requiredEnv('GX_APP_KEY') || null,
+    // GHI's bootstrap public key, used only before the first key rotation.
+    ghiStaticPublicKey: requiredEnv('GX_GHI_STATIC_PUBLIC_KEY') || null,
+
+    crypto: {
+      rsaPadding: envOr('GX_RSA_PADDING', GX.crypto.rsaPadding),
+      oaepHash: envOr('GX_OAEP_HASH', GX.crypto.oaepHash),
+      aesMode: envOr('GX_AES_MODE', GX.crypto.aesMode),
+      aesIvLength: numberEnvOr('GX_AES_IV_LENGTH', GX.crypto.aesIvLength),
+      aesTagLength: numberEnvOr('GX_AES_TAG_LENGTH', GX.crypto.aesTagLength),
+    },
+
+    keyStoreDir: envOr('GX_KEY_STORE_DIR', GX.keyStoreDir),
+    keyScheduler: boolEnvOr('GX_KEY_SCHEDULER', GX.keyScheduler),
+    keyRefreshAt: envOr('GX_KEY_REFRESH_AT', GX.keyRefreshAt),
+    keyRetryMinutes: numberEnvOr('GX_KEY_RETRY_MINUTES', GX.keyRetryMinutes),
+
+    // X-Ops-Key for /galaxy-health/ops/*; those routes are off (503) while unset.
+    opsKey: requiredEnv('GX_OPS_KEY') || '',
+
+    maxRetries: numberEnvOr('GX_MAX_RETRIES', GX.maxRetries),
+    retryBaseDelayMs: numberEnvOr('GX_RETRY_BASE_DELAY_MS', GX.retryBaseDelayMs),
+    jsonBodyLimit: envOr('GX_JSON_BODY_LIMIT', GX.jsonBodyLimit),
+
+    // The payment leg after createOrder (services/galaxyPayment.service.js).
+    // The URLs GHI configure on their side are this service's own routes:
+    //   redirect  https://<host>/health/galaxy-health/payment/return
+    //   callback  https://<host>/health/galaxy-health/payment/callback
+    //   token     https://<host>/health/galaxy-health/payment/token
+    payment: {
+      // Issued BY US to GHI for the token API. Unset = token API answers 503
+      // and every callback is refused (but still captured).
+      clientId: requiredEnv('GX_PAYMENT_CLIENT_ID') || null,
+      clientSecret: requiredEnv('GX_PAYMENT_CLIENT_SECRET') || null,
+      tokenTtlSeconds: numberEnvOr('GX_PAYMENT_TOKEN_TTL_SECONDS', GX.payment.tokenTtlSeconds),
+      // Only if GHI encrypt the result with a static AES key they issue.
+      aesKey: requiredEnv('GX_PAYMENT_AES_KEY') || null,
+      // Where the buyer goes when the order's own /galaxy-return page is not
+      // known (absolute, a /galaxy-return page).
+      frontendReturnUrl: requiredEnv('GX_PAYMENT_FRONTEND_RETURN_URL') || null,
+      // Origins whose /galaxy-return page a createOrder may name.
+      frontendReturnOrigins: [
+        ...splitList(process.env.GX_PAYMENT_FRONTEND_RETURN_ORIGINS
+          || process.env.NIVABUPA_FRONTEND_RETURN_ORIGINS
+          || APP_DEFAULTS.frontendReturnOrigins),
+        ...(isDevelopment || isLoopbackUrl(frontendUrl) ? splitList(APP_DEFAULTS.devFrontendReturnOrigins) : []),
+      ],
+      storeDir: envOr('GX_PAYMENT_STORE_DIR', GX.payment.storeDir),
+    },
+
+    // Falls back to the NivaBupa/global list so one origin allow-list covers the
+    // whole service; set GX_CORS_ORIGINS only to diverge from it.
+    corsOrigins: process.env.GX_CORS_ORIGINS
+      || process.env.NIVABUPA_CORS_ORIGINS
+      || process.env.CORS_ORIGINS
+      || APP_DEFAULTS.corsOrigins,
+  },
+
   timeouts: {
     token: numberEnvOr('NIVABUPA_TOKEN_TIMEOUT_MS', TIMEOUT_DEFAULTS.token),
     api: numberEnvOr('NIVABUPA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.api),
@@ -929,6 +1015,7 @@ const config = {
     icici: numberEnvOr('EL_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.icici),
     chola: numberEnvOr('CHOLA_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.chola),
     cholaPolicyGeneration: numberEnvOr('CHOLA_POLICY_GENERATION_TIMEOUT_MS', TIMEOUT_DEFAULTS.cholaPolicyGeneration),
+    galaxy: numberEnvOr('GX_API_TIMEOUT_MS', TIMEOUT_DEFAULTS.galaxy),
   },
 };
 
@@ -1160,6 +1247,28 @@ export function cholaFreechargeIsUnconfigured() {
   const fc = config.chola.freecharge;
   return !fc.tokenUrl && !fc.clientId && !fc.clientSecret && !fc.basicAuth && !fc.merchantId
     && !fc.checkoutUrl && !fc.callbackUrl;
+}
+
+// The variables without which no Galaxy Health call can be made, by name — the
+// working implementation's missingConfigFor('galaxy'), unchanged.
+//
+// One definition, three readers: config/validate.js reports them at boot,
+// services/galaxyApi.service.js refuses the call at request time, and
+// GET /galaxy-health/config/test answers with them. Names only, never values.
+export function missingGalaxyVariables() {
+  const missing = [];
+  if (!config.galaxy.baseUrl) missing.push('GX_BASE_URL');
+  if (!config.galaxy.channelId) missing.push('GX_CHANNEL_ID');
+  if (!config.galaxy.appKey) missing.push('GX_APP_KEY');
+  if (!config.galaxy.ghiStaticPublicKey) missing.push('GX_GHI_STATIC_PUBLIC_KEY');
+  return missing;
+}
+
+// True when none of them are set — a deployment that was simply never given
+// Galaxy credentials. Distinguished from a PARTIAL configuration, which is a
+// mistake worth warning about at boot.
+export function galaxyIsUnconfigured() {
+  return missingGalaxyVariables().length === 4;
 }
 
 // Names only — never values. Consumed by config/validate.js.

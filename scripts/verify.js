@@ -290,6 +290,29 @@ const EXPECTED_ROUTES = [
   'POST /chola-ms/ops/freecharge/payments/:merchantTxnId/refund',
   'POST /chola-ms/ops/freecharge/paylink',
   'POST /chola-ms/ops/freecharge/paylink/status',
+  // Galaxy Health. Registered whether or not GX_* is set — an unconfigured
+  // deployment answers 503 on these paths rather than 404. Each operation is
+  // served under GHI's own name and under the working implementation's short name.
+  'GET /galaxy-health/config/test',
+  'POST /galaxy-health/quickQuote',
+  'POST /galaxy-health/saveFullProposal',
+  'POST /galaxy-health/createOrder',
+  'POST /galaxy-health/uploadDocument',
+  'POST /galaxy-health/downloadDocument',
+  'POST /galaxy-health/searchDocument',
+  'POST /galaxy-health/quote',
+  'POST /galaxy-health/proposal',
+  'POST /galaxy-health/issue',
+  'POST /galaxy-health/document/upload',
+  'POST /galaxy-health/document/download',
+  'POST /galaxy-health/document/search',
+  'POST /galaxy-health/ops/getCurrentPubKey',
+  'POST /galaxy-health/ops/getNextPubKey',
+  'POST /galaxy-health/ops/rotateKeys',
+  'POST /galaxy-health/payment/token',
+  '_ALL /galaxy-health/payment/callback',
+  '_ALL /galaxy-health/payment/return',
+  'GET /galaxy-health/payment/status/:orderId',
   'GET /healthz',
   'GET /readyz',
 ];
@@ -297,7 +320,7 @@ const EXPECTED_ROUTES = [
 // Both insurer prefixes are served a second time under the compatibility alias.
 // For ITGI that is not merely a compatibility nicety: the payment response URL
 // registered with them goes through it (…/health/iffcotokio/payment/return).
-const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/', '/icici-lombard/', '/chola-ms/'];
+const ALIASED_PREFIXES = ['/nivabupa/', '/iffcotokio/', '/icici-lombard/', '/chola-ms/', '/galaxy-health/'];
 
 check(`all ${EXPECTED_ROUTES.length} routes registered at the primary mount`, () => {
   const missing = EXPECTED_ROUTES.filter((route) => !registered.has(route));

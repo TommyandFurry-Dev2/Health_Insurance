@@ -17,7 +17,7 @@ import helmet from 'helmet';
 import config from './config/env.js';
 import {
   createNivabupaRouter, createItgiRouter, createFgRouter, createIciciRouter, createCholaRouter,
-  createNivabupaProbeRouter,
+  createGalaxyRouter, createNivabupaProbeRouter,
 } from './index.js';
 
 export function createApp() {
@@ -118,6 +118,17 @@ export function createApp() {
   app.use(cholaRouter);
   if (config.aliasPrefix) {
     app.use(config.aliasPrefix, cholaRouter);
+  }
+
+  // Galaxy Health, mounted the same way and under the same alias, for ICICI's
+  // reason: the deployed frontend reaches this backend through /health, so
+  // https://<host>/health/galaxy-health/quickQuote is the URL a deployed build
+  // calls. Both mounts are safe because every route and every piece of
+  // middleware inside it is scoped to /galaxy-health.
+  const galaxyRouter = createGalaxyRouter();
+  app.use(galaxyRouter);
+  if (config.aliasPrefix) {
+    app.use(config.aliasPrefix, galaxyRouter);
   }
 
   // GET /healthz, GET /readyz — outside the /nivabupa prefix so a load balancer

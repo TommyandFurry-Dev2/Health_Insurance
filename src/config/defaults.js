@@ -364,6 +364,65 @@ export const CHOLA_FREECHARGE_DEFAULTS = {
   currency: 'INR',
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Galaxy Health Insurance (GHI, CBOS-GX V2) — moved from the working
+// implementation (novacred-insurance-integrations, :4002), whose defaults these
+// are, unchanged.
+//
+// Same rule as CHOLA_DEFAULTS: no host, no channel id, no appKey, no GHI public
+// key, no producer code and no ops key here — those are GHI-issued and per
+// environment (GX_BASE_URL, GX_CHANNEL_ID, GX_APP_KEY, GX_GHI_STATIC_PUBLIC_KEY,
+// GX_PRODUCER_CODE, GX_OPS_KEY). What IS here is the agreed crypto contract
+// (validated with GHI in both directions on 27 Oct 2026), the key-day timing
+// GHI asked for (mail of 29 Oct 2026) and the behaviour of the working
+// implementation.
+// ─────────────────────────────────────────────────────────────────────────────
+export const GALAXY_DEFAULTS = {
+  // Our identity in GH-CLIENT-CONTEXT and the User-Agent CBOS issued with the
+  // appKey ("Galaxy-NovaCred", GHI mail of 28 Oct 2026).
+  srcSystemName: 'NovaCred',
+  srcClientId: 'API',
+  userAgent: 'Galaxy-NovaCred',
+  clientIp: 'S2S',
+
+  crypto: {
+    rsaPadding: 'oaep',      // oaep | pkcs1
+    oaepHash: 'sha256',      // sha256 | sha1
+    aesMode: 'aes-256-gcm',  // aes-256-gcm | aes-256-ecb | aes-256-cbc
+    aesIvLength: 32,         // bytes, GCM only
+    aesTagLength: 16,        // bytes, GCM only
+  },
+
+  // GHI keys + NovaCred keypairs (services/galaxyKeyStore.service.js).
+  // Git-ignored. Must be on disk a deploy does not overwrite.
+  keyStoreDir: './data/galaxy-keys',
+
+  // The daily getCurrentPubKey job. OFF by default: exactly one process per GHI
+  // environment may run it (every fetch registers a new NovaCred key with GHI).
+  keyScheduler: false,
+  // HH:MM IST. GHI: "Non-PRD: 5:05 AM onwards, PRD: 12:05 AM onwards".
+  keyRefreshAt: '05:05',
+  keyRetryMinutes: 15,
+
+  // Business-call retries on transport failures and 502/503/504 (key fetches
+  // are never retried) — the working implementation's HTTP_MAX_RETRIES and
+  // HTTP_RETRY_BASE_DELAY_MS defaults.
+  maxRetries: 2,
+  retryBaseDelayMs: 500,
+
+  // The working implementation parsed every body up to 5mb; uploadDocument
+  // carries a base64 file.
+  jsonBodyLimit: '5mb',
+
+  // The payment leg (services/galaxyPayment.service.js): order records and
+  // captures of GHI's redirect/callback (git-ignored), and the lifetime of the
+  // Bearer token our token API gives GHI for the callback.
+  payment: {
+    storeDir: './data/galaxy-payments',
+    tokenTtlSeconds: 3600,
+  },
+};
+
 // Novacred's own channel identity on every UW Decision / Data Push request
 // (NivaBupa's observations on our payload, 2026-08-07). Not per-buyer data —
 // there is no form field or API response any of them could come from.
@@ -467,6 +526,11 @@ export const TIMEOUT_DEFAULTS = {
   // deposit may be debited, and the proposal becomes NEEDS_REVIEW for a person
   // to reconcile. The working implementation hard-coded this value.
   cholaPolicyGeneration: 120000,
+
+  // ── Galaxy Health ──
+  // The working implementation's HTTP_TIMEOUT_MS default, which every GHI call
+  // ran under. Kept under the SPA's 45s galaxyClient budget for one attempt.
+  galaxy: 30000,
 };
 
 // Ours, not NivaBupa's — see config/env.js for why each default is what it is.

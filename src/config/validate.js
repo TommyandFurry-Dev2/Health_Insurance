@@ -35,11 +35,15 @@ import config, {
   missingCholaCkycVariables,
   missingCholaFreechargeVariables,
   cholaFreechargeIsUnconfigured,
+  missingGalaxyVariables,
+  galaxyIsUnconfigured,
   iciciProductionPathsNotSet,
   iciciProductionIsUnconfigured,
   iciciEnvironmentRefusal,
 } from './env.js';
 import { CHOLA_PAYMENT_MODES } from '../constants/chola.constants.js';
+import { GALAXY_PAYMENT_RETURN_PAGE } from '../constants/galaxy.constants.js';
+import { resolveFrontendReturnUrl } from '../helpers/payment.helper.js';
 
 // Without these, the named flow cannot work at all — there is no fallback and
 // no way to synthesise one.
@@ -301,6 +305,30 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
   }
   console.log('');
 
+  // ── Galaxy Health ──
+  //
+  // Optional, like the others: GHI issue every value, so missing means the
+  // /galaxy-health endpoints answer 503 and nothing else is affected.
+  const galaxyMissing = missingGalaxyVariables();
+  console.log('  Galaxy Health (optional — every other insurer is unaffected either way)');
+  if (galaxyIsUnconfigured()) {
+    console.log('    not configured — /galaxy-health endpoints answer 503');
+  } else {
+    console.log('    base URL                 :', describeUrl(config.galaxy.baseUrl));
+    console.log('    GX_CHANNEL_ID            :', describeSecret(config.galaxy.channelId));
+    console.log('    GX_APP_KEY               :', describeSecret(config.galaxy.appKey));
+    console.log('    GX_GHI_STATIC_PUBLIC_KEY :', describeSecret(config.galaxy.ghiStaticPublicKey));
+    console.log('    GX_PRODUCER_CODE         :', describeSecret(config.galaxy.producerCode));
+    console.log('    key store                :', config.galaxy.keyStoreDir);
+    console.log('    key scheduler            :', config.galaxy.keyScheduler ? `on (${config.galaxy.keyRefreshAt} IST)` : 'off');
+    console.log('    GX_OPS_KEY               :', describeSecret(config.galaxy.opsKey));
+    console.log('    GX_PAYMENT_CLIENT_ID     :', describeSecret(config.galaxy.payment.clientId));
+    console.log('    GX_PAYMENT_CLIENT_SECRET :', describeSecret(config.galaxy.payment.clientSecret));
+    console.log('    payment return page      :', describeUrl(config.galaxy.payment.frontendReturnUrl));
+    console.log('    payment store            :', config.galaxy.payment.storeDir);
+  }
+  console.log('');
+
   const fatal = [];
 
   // Reported above with the production profile; fatal only under STRICT_ENV=1.
@@ -357,6 +385,44 @@ export function validateConfig({ strict = process.env.STRICT_ENV === '1' } = {})
       console.error(`       ${cholaUatEndpoints.join(', ')}`);
       console.error('');
       fatal.push(...cholaUatEndpoints);
+    }
+  }
+
+  if (!galaxyIsUnconfigured()) {
+    if (galaxyMissing.length > 0) {
+      console.warn('  ⚠️  Galaxy Health is PARTIALLY configured — missing:');
+      console.warn(`       ${galaxyMissing.join(', ')}`);
+      console.warn('       The /galaxy-health endpoints will answer 503 until these are set.');
+      console.warn('');
+      if (strict) fatal.push(...galaxyMissing);
+    }
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(String(config.galaxy.keyRefreshAt))) {
+      console.warn(`  ⚠️  GX_KEY_REFRESH_AT "${config.galaxy.keyRefreshAt}" is not HH:MM (IST); the Galaxy key scheduler will not start.`);
+      console.warn('');
+    }
+    // A warning, never fatal: the server is shared with the other insurers, and
+    // a Galaxy setting must not stop them booting. Business calls to GHI UAT
+    // from a production build would still be wrong, so it is said loudly.
+    if (isProduction && /uat-gxapi/i.test(config.galaxy.baseUrl || '')) {
+      console.warn('  ⚠️  NODE_ENV=production but GX_BASE_URL points at GHI UAT (uat-gxapi).');
+      console.warn('');
+    }
+    // The payment leg: warnings only, like the rest of Galaxy.
+    const pay = config.galaxy.payment;
+    if (!pay.clientId || !pay.clientSecret) {
+      console.warn('  ⚠️  Galaxy payment token API is off (GX_PAYMENT_CLIENT_ID / GX_PAYMENT_CLIENT_SECRET not set):');
+      console.warn('       GHI cannot get a token, and every /galaxy-health/payment/callback answers 401.');
+      console.warn('');
+    }
+    const returnPage = resolveFrontendReturnUrl(pay.frontendReturnUrl, pay.frontendReturnOrigins, GALAXY_PAYMENT_RETURN_PAGE);
+    if (!pay.frontendReturnUrl) {
+      console.warn('  ⚠️  GX_PAYMENT_FRONTEND_RETURN_URL is not set: a buyer whose order is not matched sees a');
+      console.warn('       neutral "could not confirm" page instead of the website /galaxy-return page.');
+      console.warn('');
+    } else if (returnPage.reason) {
+      console.warn(`  ⚠️  GX_PAYMENT_FRONTEND_RETURN_URL is ignored: ${returnPage.reason}.`);
+      console.warn(`       It must be an allowed origin's ${GALAXY_PAYMENT_RETURN_PAGE} page (GX_PAYMENT_FRONTEND_RETURN_ORIGINS).`);
+      console.warn('');
     }
   }
 

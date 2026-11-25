@@ -15,6 +15,17 @@ returnmessage*.txt
 # callback arrives (services/nivabupaReturnTarget.service.js). Runtime state.
 data/nivabupa-return-targets/
 
+# Galaxy Health key store (GX_KEY_STORE_DIR): GHI's daily public key and
+# NovaCred's RSA PRIVATE keys. Secrets and runtime state — never commit.
+data/galaxy-keys/
+
+# Galaxy Health payment orders and captures of GHI's redirect/callback
+# (GX_PAYMENT_STORE_DIR). Runtime state — never commit.
+data/galaxy-payments/
+
+# GHI curl captures carry the Authorization value. Never commit.
+Galaxy_*.curl.txt
+
 # `users` table dumps taken by scripts/setup-database.js before a migration
 # alters it. Customer data — never commit.
 backups/
