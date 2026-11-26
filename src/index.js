@@ -35,6 +35,7 @@ import { startGxKeyScheduler } from './services/galaxyKeyScheduler.service.js';
 import { tokenEndpoint as cholaFreechargeTokenEndpoint } from './services/cholaFreecharge.service.js';
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
+import { checkPurchaseStoreSchema } from './services/healthPurchase.service.js';
 import { missingKycVariables } from './services/nivabupaKyc.service.js';
 import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helper.js';
 
@@ -134,6 +135,14 @@ export async function startNivabupa() {
     console.error(`  ⚠️  MySQL: NOT connected — ${dbStatus.error}`);
     console.error('  ⚠️  Journey persistence DISABLED. NivaBupa pass-through endpoints still work;');
     console.error('     journeys will not be saved or resumable. Run: npm run migrate');
+  }
+  // The health purchase store (migrations 008–014): ON only with its keys set,
+  // MySQL connected and the tables present. OFF changes nothing for any insurer.
+  const purchaseStore = await checkPurchaseStoreSchema();
+  if (purchaseStore.enabled) {
+    console.log(`  🗂️  Purchase store: ON (key version ${purchaseStore.keyVersion}) → health_* tables`);
+  } else {
+    console.log(`  🗂️  Purchase store: OFF — ${purchaseStore.reason}. Insurer flows are unaffected.`);
   }
   console.log('───────────────────────────────────────────────────────');
 

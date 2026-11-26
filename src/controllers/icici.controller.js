@@ -4,6 +4,8 @@ import config, {
 import * as iciciApi from '../services/iciciApi.service.js';
 import * as iciciCkyc from '../services/iciciCkyc.service.js';
 import * as journeyService from '../services/journey.service.js';
+import { recordIciciCall } from '../services/iciciPurchaseStore.service.js';
+import { waitBriefly } from '../services/healthPurchase.service.js';
 import { ICICI_API_NAMES, ICICI_PROVIDER } from '../constants/icici.constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,9 +38,13 @@ import { ICICI_API_NAMES, ICICI_PROVIDER } from '../constants/icici.constants.js
 //
 // Persistence: every call is audited into the existing api_transactions table
 // via recordStandaloneApiCall, with the journey id when the caller sent one —
-// the same decision the ITGI and FG controllers made. ICICI calls do NOT write
-// the typed journey_quotes / journey_proposals rows, which are shaped around
-// NivaBupa's envelopes. No table was added for ICICI.
+// the same decision the ITGI and FG controllers made — AND saved to the health
+// purchase store (migrations 008 + 012, services/iciciPurchaseStore.service.js):
+// the purchase, proposer, members, KYC attempts, payment verdict, policy and
+// COI, keyed by ICICI's TransactionId. The store is off until its keys are set,
+// never throws, and waits at most HEALTH_STORE_WAIT_MS; when a call belongs to
+// a purchase the response carries X-Purchase-Id, and the body is unchanged.
+// The api_transactions row stays until the store is proven on the server.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The failure envelope, exactly as the working implementation's error handler
@@ -84,6 +90,14 @@ function audit({
   });
 }
 
+// The same call saved to the health purchase store, beside the audit row. Never
+// throws, never holds the response longer than HEALTH_STORE_WAIT_MS, and sets
+// X-Purchase-Id when the call belongs to a purchase.
+async function persist(req, res, input) {
+  const stored = await waitBriefly(recordIciciCall({ req, ...input }));
+  if (stored?.purchaseRef && !res.headersSent) res.set('X-Purchase-Id', stored.purchaseRef);
+}
+
 // The upstream HTTP status of a failed call, when one was received.
 function failedHttpStatus(error) {
   return error.exchange?.responseStatus ?? error.details?.httpStatus ?? null;
@@ -118,33 +132,56 @@ function passThrough({ operation, apiName, run, correlationOf }) {
     try {
       const { result, exchange } = await run(body);
 
-      await audit({
-        req,
-        apiName,
-        startedAt,
-        httpStatus: exchange?.responseStatus,
-        endpointUrl: exchange?.url || safeEndpoint(operation),
-        requestPayload: body,
-        responsePayload: result.data,
-        correlationId: correlationOf(body, result),
-      });
+      await Promise.all([
+        audit({
+          req,
+          apiName,
+          startedAt,
+          httpStatus: exchange?.responseStatus,
+          endpointUrl: exchange?.url || safeEndpoint(operation),
+          requestPayload: body,
+          responsePayload: result.data,
+          correlationId: correlationOf(body, result),
+        }),
+        persist(req, res, {
+          apiName,
+          httpStatus: exchange?.responseStatus,
+          endpointUrl: exchange?.url || safeEndpoint(operation),
+          durationMs: Date.now() - startedAt,
+          requestBody: body,
+          responseData: result.data,
+          correlationId: correlationOf(body, result),
+        }),
+      ]);
 
       return res.status(200).json({ ...result, iciciRequest: exchange || null });
     } catch (error) {
       console.error(`❌ ICICI ${operation} failed: [${error.code || 'INTERNAL_ERROR'}] ${error.message}`);
 
-      await audit({
-        req,
-        apiName,
-        startedAt,
-        httpStatus: failedHttpStatus(error),
-        endpointUrl: error.exchange?.url || safeEndpoint(operation),
-        requestPayload: body,
-        responsePayload: error.details || null,
-        errorCode: error.code || 'INTERNAL_ERROR',
-        errorMessage: error.message,
-        correlationId: correlationOf(body, null),
-      });
+      await Promise.all([
+        audit({
+          req,
+          apiName,
+          startedAt,
+          httpStatus: failedHttpStatus(error),
+          endpointUrl: error.exchange?.url || safeEndpoint(operation),
+          requestPayload: body,
+          responsePayload: error.details || null,
+          errorCode: error.code || 'INTERNAL_ERROR',
+          errorMessage: error.message,
+          correlationId: correlationOf(body, null),
+        }),
+        persist(req, res, {
+          apiName,
+          httpStatus: failedHttpStatus(error),
+          endpointUrl: error.exchange?.url || safeEndpoint(operation),
+          durationMs: Date.now() - startedAt,
+          requestBody: body,
+          responseData: error.details || null,
+          error: { code: error.code || 'INTERNAL_ERROR', message: error.message },
+          correlationId: correlationOf(body, null),
+        }),
+      ]);
 
       return respondWithError(res, error);
     }
@@ -255,6 +292,23 @@ export const coi = async (req, res) => {
       correlationId: transactionId,
     });
 
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.COI,
+      httpMethod: 'GET',
+      httpStatus: exchange?.responseStatus,
+      endpointUrl: exchange?.url || null,
+      durationMs: Date.now() - startedAt,
+      requestForLog: { transactionId },
+      responseForLog: {
+        hasDocument: Boolean(result.data.coi),
+        contentType: result.data.contentType,
+        byteLength: result.data.byteLength,
+        status: result.data.status,
+      },
+      correlationId: transactionId,
+      document: result.data.coi ? { base64: result.data.coi, contentType: result.data.contentType } : null,
+    });
+
     return res.status(200).json(result);
   } catch (error) {
     console.error(`❌ ICICI coi failed: [${error.code || 'INTERNAL_ERROR'}] ${error.message}`);
@@ -270,6 +324,18 @@ export const coi = async (req, res) => {
       responsePayload: error.details || null,
       errorCode: error.code || 'INTERNAL_ERROR',
       errorMessage: error.message,
+      correlationId: transactionId,
+    });
+
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.COI,
+      httpMethod: 'GET',
+      httpStatus: failedHttpStatus(error),
+      endpointUrl: error.exchange?.url || null,
+      durationMs: Date.now() - startedAt,
+      requestForLog: { transactionId },
+      responseData: error.details || null,
+      error: { code: error.code || 'INTERNAL_ERROR', message: error.message },
       correlationId: transactionId,
     });
 
@@ -323,6 +389,24 @@ export const ckyc = async (req, res) => {
       correlationId: body.transactionId,
     });
 
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.CKYC,
+      httpStatus: exchange?.responseStatus,
+      endpointUrl: exchange?.url || safeEndpoint('ckyc'),
+      durationMs: Date.now() - startedAt,
+      requestBody: body,
+      requestForLog: describeCkycRequest(body),
+      responseData: d,
+      responseForLog: {
+        isKycSuccess: d.isKycSuccess,
+        kycId: d.kycId ?? null,
+        statusCode: d.statusCode,
+        displayMessage: d.displayMessage,
+        ovdLinkOffered: Boolean(d.ovdLink),
+      },
+      correlationId: body.transactionId,
+    });
+
     return res.status(200).json(result);
   } catch (error) {
     console.error(`❌ ICICI ckyc failed: [${error.code || 'INTERNAL_ERROR'}] ${error.message}`);
@@ -337,6 +421,18 @@ export const ckyc = async (req, res) => {
       responsePayload: error.details || null,
       errorCode: error.code || 'INTERNAL_ERROR',
       errorMessage: error.message,
+      correlationId: body.transactionId,
+    });
+
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.CKYC,
+      httpStatus: failedHttpStatus(error),
+      endpointUrl: error.exchange?.url || safeEndpoint('ckyc'),
+      durationMs: Date.now() - startedAt,
+      requestBody: body,
+      requestForLog: describeCkycRequest(body),
+      responseData: error.details || null,
+      error: { code: error.code || 'INTERNAL_ERROR', message: error.message },
       correlationId: body.transactionId,
     });
 
@@ -379,6 +475,22 @@ export const ovdInitiate = async (req, res) => {
       correlationId: body.quoteTransactionId,
     });
 
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.OVD_INITIATE,
+      httpStatus: exchange?.responseStatus,
+      endpointUrl: exchange?.url || safeEndpoint('ovdInitiate'),
+      durationMs: Date.now() - startedAt,
+      requestBody: { quoteTransactionId: body.quoteTransactionId ?? null },
+      requestForLog: described,
+      responseData: d,
+      responseForLog: {
+        isKycSuccess: d.isKycSuccess,
+        errorCode: result.meta.errorCode ?? null,
+        errorMessage: d.errorMessage ?? null,
+      },
+      correlationId: body.quoteTransactionId,
+    });
+
     return res.status(200).json(result);
   } catch (error) {
     console.error(`❌ ICICI ovdInitiate failed: [${error.code || 'INTERNAL_ERROR'}] ${error.message}`);
@@ -393,6 +505,18 @@ export const ovdInitiate = async (req, res) => {
       responsePayload: error.details || null,
       errorCode: error.code || 'INTERNAL_ERROR',
       errorMessage: error.message,
+      correlationId: body.quoteTransactionId,
+    });
+
+    await persist(req, res, {
+      apiName: ICICI_API_NAMES.OVD_INITIATE,
+      httpStatus: failedHttpStatus(error),
+      endpointUrl: error.exchange?.url || safeEndpoint('ovdInitiate'),
+      durationMs: Date.now() - startedAt,
+      requestBody: { quoteTransactionId: body.quoteTransactionId ?? null },
+      requestForLog: described,
+      responseData: error.details || null,
+      error: { code: error.code || 'INTERNAL_ERROR', message: error.message },
       correlationId: body.quoteTransactionId,
     });
 

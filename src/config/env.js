@@ -916,6 +916,22 @@ const config = {
     timeoutMs: Number(process.env.MY_POLICIES_INTAKE_TIMEOUT_MS) || 8000,
   },
 
+  // Health purchase store (migrations 008–014, services/healthPurchase.service.js).
+  // Every insurer call that moves a purchase forward is saved to the common
+  // health_* tables and the insurer's own health_<insurer>_* tables, with
+  // personal data encrypted. Off while either key is empty, and then every
+  // insurer flow runs exactly as before. Keys never reach the database; losing
+  // them makes the encrypted columns unreadable, so back them up.
+  healthStore: {
+    // "1:<base64 32 bytes>"; to rotate, append "2:<new key>" and keep 1 for reading.
+    encKeys: process.env.HEALTH_DATA_ENC_KEYS || '',
+    // base64, at least 32 bytes, different from every encryption key.
+    hashKey: process.env.HEALTH_DATA_HASH_KEY || '',
+    // How long a buyer's response may wait for the store before going out
+    // without the X-Purchase-Id header; the write still completes afterwards.
+    waitMs: Number(process.env.HEALTH_STORE_WAIT_MS) || 1500,
+  },
+
   // ── Galaxy Health Insurance (GHI, CBOS-GX V2) ─────────────────────────────
   // Moved from the working implementation (novacred-insurance-integrations,
   // :4002) with its GX_* variable NAMES unchanged, so its .env block copies

@@ -26,6 +26,7 @@
     "smoke:fg": "node scripts/smoke-fg.js",
     "smoke:icici": "node scripts/smoke-icici.js",
     "test:icici": "node scripts/test-icici.js",
+    "test:purchase-store": "node scripts/test-purchase-store-icici.js",
     "smoke:chola": "node scripts/smoke-chola.js",
     "test:chola": "node scripts/test-chola.js",
     "test:chola:freecharge": "node scripts/test-chola-freecharge.js",

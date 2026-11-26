@@ -282,7 +282,9 @@ export function createIciciRouter() {
 
   router.use(
     ICICI_PATH_PREFIX,
-    cors(corsOptions(config.icici.corsOrigins)),
+    // X-Purchase-Id is exposed so the SPA can read the Purchase ID the
+    // purchase store returns (services/iciciPurchaseStore.service.js).
+    cors({ ...corsOptions(config.icici.corsOrigins), exposedHeaders: ['X-Purchase-Id'] }),
     express.json({ limit: config.icici.jsonBodyLimit }),
     express.urlencoded({ extended: false, limit: config.icici.jsonBodyLimit }),
     logRequest,
