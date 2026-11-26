@@ -914,6 +914,15 @@ const config = {
     // The same value as HEALTH_POLICY_SECRET on insuranceapi (both servers).
     secret: process.env.HEALTH_POLICY_SECRET || '',
     timeoutMs: Number(process.env.MY_POLICIES_INTAKE_TIMEOUT_MS) || 8000,
+    // Niva Bupa usually issue after the buyer has left the Covered page, and
+    // nothing else asks again. Every N minutes, policies paid (datapush
+    // succeeded) in the last maxAgeDays and not yet ISSUED / REJECTED /
+    // CANCELLED are asked about with proposal-status; an ISSUED answer reaches
+    // My Policies through the usual hook. 0 turns it off. Runs only while the
+    // intake above is configured.
+    issueCheckMinutes: numberEnvOr('NIVABUPA_ISSUE_CHECK_MINUTES', 30),
+    issueCheckMaxAgeDays: numberEnvOr('NIVABUPA_ISSUE_CHECK_MAX_AGE_DAYS', 15),
+    issueCheckBatch: numberEnvOr('NIVABUPA_ISSUE_CHECK_BATCH', 10),
   },
 
   // Health purchase store (migrations 008–014, services/healthPurchase.service.js).
