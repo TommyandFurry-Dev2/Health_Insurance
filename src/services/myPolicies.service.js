@@ -57,6 +57,47 @@ export function membersOf(members) {
   return [...counts].map(([label, n]) => (n > 1 ? `${n} ${label}s` : label));
 }
 
+const MONTHS = { JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06', JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12' };
+
+/** Niva Bupa's '06/Aug/1998' (or dd/mm/yyyy, or ISO) as 'YYYY-MM-DD'; '' when unreadable. */
+export function isoDate(value) {
+  const v = text(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  const m = v.match(/^(\d{1,2})[/-]([A-Za-z]{3}|\d{1,2})[/-](\d{4})$/);
+  if (!m) return '';
+  const month = /^\d+$/.test(m[2]) ? m[2].padStart(2, '0') : MONTHS[m[2].toUpperCase()];
+  return month ? `${m[3]}-${month}-${m[1].padStart(2, '0')}` : '';
+}
+
+/** 'SELF' → 'Self', 'GRAND_FATHER' → 'Grand father'. */
+function relationLabel(code) {
+  const c = text(code).toUpperCase();
+  return c ? c.charAt(0) + c.slice(1).toLowerCase().replace(/_/g, ' ') : '';
+}
+
+/**
+ * One entry per insured person, for the per-member cards in My Policies, from
+ * MEMBER[].PERSON_DETAILS (the names, dates of birth and relations the buyer
+ * typed). Members without a name are skipped.
+ */
+export function insuredOf(members) {
+  const out = [];
+  for (const member of Array.isArray(members) ? members : []) {
+    const p = member?.PERSON_DETAILS || {};
+    const name = [text(p.FIRST_NAME), text(p.MIDDLE_NAME), text(p.LAST_NAME)].filter(Boolean).join(' ');
+    if (!name) continue;
+    const entry = { name, relation: relationLabel(p.RELATIONSHIP_PROPOSER) };
+    const dob = isoDate(p.DOB);
+    if (dob) entry.dob = dob;
+    const gender = text(p.GENDER).toUpperCase();
+    if (gender === 'M' || gender === 'F') entry.gender = gender;
+    if (text(member?.MEMBER_ID)) entry.memberId = text(member.MEMBER_ID);
+    out.push(entry);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 /**
  * The insuranceapi body for a Niva Bupa policy, from the datapush request
  * (`{ Proposal: { POLICY, PROPOSER, MEMBER[] } }`), or null when it lacks the
@@ -90,6 +131,8 @@ export function nivaBupaPolicyBody(dataPushPayload, { stage, policyNumber, numbe
     cover: Number(contract.SUM_INSURED) || undefined,
     members: membersOf(proposal.MEMBER),
   };
+  const insured = insuredOf(proposal.MEMBER);
+  if (insured.length) body.insured = insured;
   if (text(policyNumber)) body.policyNumber = text(policyNumber);
   if (numberKind === 'code' && body.policyNumber) body.numberKind = 'code';
   return body;

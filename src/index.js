@@ -36,6 +36,7 @@ import { tokenEndpoint as cholaFreechargeTokenEndpoint } from './services/cholaF
 import db from './db/index.js';
 import * as journeyService from './services/journey.service.js';
 import { checkPurchaseStoreSchema } from './services/healthPurchase.service.js';
+import { startIssueCheck, stopIssueCheck } from './services/nivabupaIssueCheck.service.js';
 import { missingKycVariables } from './services/nivabupaKyc.service.js';
 import { paymentGatewayUrl as itgiPaymentGatewayUrl } from './helpers/itgi.helper.js';
 
@@ -131,6 +132,7 @@ export async function startNivabupa() {
     console.log(`  🗄️  MySQL: connected → ${dbStatus.db} (server ${dbStatus.version})`);
     console.log(`  💾 Journey persistence: ENABLED (resume TTL ${config.journey.ttlDays}d, abandon after ${config.journey.abandonAfterHours}h)`);
     startSweeper();
+    startIssueCheck();
   } else {
     console.error(`  ⚠️  MySQL: NOT connected — ${dbStatus.error}`);
     console.error('  ⚠️  Journey persistence DISABLED. NivaBupa pass-through endpoints still work;');
@@ -528,6 +530,7 @@ export async function stopNivabupa() {
     clearInterval(sweeper);
     sweeper = null;
   }
+  stopIssueCheck();
   if (galaxyKeyScheduler) {
     galaxyKeyScheduler.stop();
     galaxyKeyScheduler = null;

@@ -42,10 +42,10 @@ const dataPush = {
       CONTACT_DETAILS: { MOBILE: '9876543210', EMAIL_ID: 'priya@example.com' },
     },
     MEMBER: [
-      { PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SELF' } },
-      { PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SPOUSE' } },
-      { PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SON' } },
-      { PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'DAUGHTER' } },
+      { MEMBER_ID: '9001', PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SELF', FIRST_NAME: 'Priya', LAST_NAME: 'Sharma', DOB: '06/Aug/1988', GENDER: 'F' } },
+      { MEMBER_ID: '9002', PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SPOUSE', FIRST_NAME: 'Rahul', MIDDLE_NAME: '', LAST_NAME: 'Sharma', DOB: '14/Jan/1986', GENDER: 'M' } },
+      { MEMBER_ID: '9003', PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SON', FIRST_NAME: 'Aarav', LAST_NAME: 'Sharma', DOB: '01/Dec/2015', GENDER: 'M' } },
+      { MEMBER_ID: '9004', PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'DAUGHTER', FIRST_NAME: 'Anaya', LAST_NAME: 'Sharma', DOB: '22/Mar/2019', GENDER: 'F' } },
     ],
   },
 };
@@ -100,6 +100,12 @@ test('the body: plan name, cover, family, policy code, keyed by SOURCING_APPNO',
     plan: 'Reassure 3.0 Black',
     cover: 500000,
     members: ['You', 'Spouse', 'Son', 'Daughter'],
+    insured: [
+      { name: 'Priya Sharma', relation: 'Self', dob: '1988-08-06', gender: 'F', memberId: '9001' },
+      { name: 'Rahul Sharma', relation: 'Spouse', dob: '1986-01-14', gender: 'M', memberId: '9002' },
+      { name: 'Aarav Sharma', relation: 'Son', dob: '2015-12-01', gender: 'M', memberId: '9003' },
+      { name: 'Anaya Sharma', relation: 'Daughter', dob: '2019-03-22', gender: 'F', memberId: '9004' },
+    ],
     policyNumber: '12345678',
     numberKind: 'code',
   });
@@ -126,6 +132,28 @@ test('members are counted; a body without SOURCING_APPNO or mobile is not built'
   assert.equal(myPolicies.nivaBupaPolicyBody('not json', { stage: 'paid' }), null);
 });
 
+test('insured members: dates to ISO, relation labels, nameless members skipped', () => {
+  assert.equal(myPolicies.isoDate('06/Aug/1998'), '1998-08-06');
+  assert.equal(myPolicies.isoDate('6/aug/1998'), '1998-08-06');
+  assert.equal(myPolicies.isoDate('06/08/1998'), '1998-08-06');
+  assert.equal(myPolicies.isoDate('1998-08-06T00:00:00Z'), '1998-08-06');
+  assert.equal(myPolicies.isoDate('06/Foo/1998'), '');
+  assert.equal(myPolicies.isoDate(null), '');
+
+  assert.deepEqual(myPolicies.insuredOf([
+    { PERSON_DETAILS: { FIRST_NAME: 'Asha', RELATIONSHIP_PROPOSER: 'GRAND_MOTHER', DOB: 'bad', GENDER: 'X' } },
+    { PERSON_DETAILS: { RELATIONSHIP_PROPOSER: 'SON' } },
+  ]), [{ name: 'Asha', relation: 'Grand mother' }]);
+  assert.deepEqual(myPolicies.insuredOf(undefined), []);
+
+  // No names at all: no `insured` key, the labels still go
+  const unnamed = structuredClone(dataPush);
+  for (const m of unnamed.Proposal.MEMBER) { delete m.PERSON_DETAILS.FIRST_NAME; delete m.PERSON_DETAILS.LAST_NAME; }
+  const body = myPolicies.nivaBupaPolicyBody(unnamed, { stage: 'paid' });
+  assert.equal('insured' in body, false);
+  assert.deepEqual(body.members, ['You', 'Spouse', 'Son', 'Daughter']);
+});
+
 test('sends to insuranceapi with the secret; logs only the reference', async () => {
   received.length = 0;
   answer = { status: 200, body: { status: 'ok', id: 7, action: 'inserted' } };
@@ -137,7 +165,8 @@ test('sends to insuranceapi with the secret; logs only the reference', async () 
   assert.equal(received[0].secret, 'test-secret');
   assert.equal(received[0].body.reference, '123456789012');
   assert.match(logs, /nivabupa:123456789012 paid \(code\) → inserted/);
-  assert.doesNotMatch(logs, /9876543210|Priya|priya@example\.com/);
+  assert.doesNotMatch(logs, /9876543210|Priya|Rahul|Aarav|Anaya|1988-08-06|priya@example\.com/);
+  assert.equal(received[0].body.insured.length, 4);
 });
 
 test('a refusal or an unreachable insuranceapi never throws', async () => {
