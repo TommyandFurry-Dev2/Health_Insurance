@@ -750,6 +750,26 @@ await test('token API: Basic auth and OAuth2 form (client_id / client_secret) al
   eq(form.status, 200, 'form');
 });
 
+await test('token API: credentials sent B64(ROT47(B64(value))) encoded are accepted (JSON, email/password, Basic)', async () => {
+  const enc = (v) => Buffer.from(GxCrypto.rot47(Buffer.from(v, 'utf8').toString('base64')), 'utf8').toString('base64');
+  const post = (body, headers = {}) => call('POST', '/galaxy-health/payment/token', body, headers);
+  eq((await post({ clientId: enc(SECRETS.payClientId), clientSecret: enc(SECRETS.payClientSecret) })).status, 200, 'JSON clientId/clientSecret, encoded');
+  eq((await post({ email: SECRETS.payClientId, password: SECRETS.payClientSecret })).status, 200, 'email/password, plain');
+  eq((await post({ email: enc(SECRETS.payClientId), password: enc(SECRETS.payClientSecret) })).status, 200, 'email/password, encoded');
+  eq((await post({ userName: enc(SECRETS.payClientId), password: SECRETS.payClientSecret })).status, 200, 'userName encoded + password plain');
+  eq((await post({ emailId: enc(SECRETS.payClientId), password: enc(SECRETS.payClientSecret) })).status, 200, 'emailId/password, encoded');
+  eq((await post({ emailAddress: enc(SECRETS.payClientId), password: enc(SECRETS.payClientSecret) })).status, 200, 'emailAddress/password, encoded');
+  eq((await post({}, { Authorization: `Basic ${enc(`${SECRETS.payClientId}:${SECRETS.payClientSecret}`)}` })).status, 200, 'Basic B64(ROT47(B64(id:secret)))');
+  eq((await post({}, { Authorization: `Basic ${Buffer.from(`${enc(SECRETS.payClientId)}:${enc(SECRETS.payClientSecret)}`).toString('base64')}` })).status, 200, 'Basic base64(enc(id):enc(secret))');
+  eq((await post({ email: enc(SECRETS.payClientId), password: enc('wrong-secret') })).status, 401, 'encoded wrong secret');
+  // base64 ignores the low bits of a padded final character: an altered last character can decode alike.
+  const encSecret = enc(SECRETS.payClientSecret);
+  const alias = encSecret.replace(/([A-Za-z0-9+/])(=+)$/, (m, c, pad) => { const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'; const i = A.indexOf(c); return A[i ^ 1] + pad; });
+  if (alias !== encSecret) eq((await post({ email: enc(SECRETS.payClientId), password: alias })).status, 401, 'non-canonical encoding of the right secret');
+  eq((await post({ email: enc('someone-else'), password: enc(SECRETS.payClientSecret) })).status, 401, 'encoded wrong id');
+  eq((await post({ clientId: SECRETS.payClientId, clientSecret: Buffer.from(SECRETS.payClientSecret).toString('base64') })).status, 401, 'plain base64 alone is not the GHI encoding');
+});
+
 await test('token API: a wrong secret → 401; switched off (503) without GX_PAYMENT_CLIENT_*', async () => {
   eq((await call('POST', '/galaxy-health/payment/token', { clientId: SECRETS.payClientId, clientSecret: 'wrong' })).status, 401, 'wrong secret');
   const saved = config.galaxy.payment.clientSecret;

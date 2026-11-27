@@ -63,27 +63,66 @@ export function tokenApiConfigured() {
   return Boolean(payCfg().clientId && payCfg().clientSecret);
 }
 
+const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * The inverse of GHI's B64(ROT47(B64(value))) — the transform GHI's GX
+ * Authentication V2 spec defines for GH-CLIENT-CONTEXT (GxCrypto.rot47), which
+ * GHI apply to the token-API credentials too. Returns the plain value, or null
+ * when `value` is not in that form. Never logged.
+ */
+function decodeGhiEncoded(value) {
+  if (typeof value !== 'string' || value.length % 4 !== 0 || !B64_RE.test(value)) return null;
+  const rot = Buffer.from(value, 'base64').toString('utf8');
+  const inner = GxCrypto.rot47(rot);
+  if (inner.length % 4 !== 0 || !B64_RE.test(inner)) return null;
+  const plain = Buffer.from(inner, 'base64').toString('utf8');
+  if (!plain || plain.includes('�')) return null;
+  // Only the exact (canonical) encoding: base64 ignores the low bits of a padded
+  // final character, so e.g. "...NGw=" and "...NGx=" decode alike; re-encoding
+  // must give back exactly what was sent.
+  const canonical = Buffer.from(GxCrypto.rot47(Buffer.from(plain, 'utf8').toString('base64')), 'utf8').toString('base64');
+  return canonical === value ? plain : null;
+}
+
+/** `given` is the configured value, sent plain or B64(ROT47(B64())) encoded. Constant-time. */
+const credentialMatches = (given, expected) => {
+  const plain = safeEqual(given, expected);
+  const encoded = safeEqual(decodeGhiEncoded(given), expected);
+  return plain || encoded;
+};
+
 /**
  * The client id/secret from the token request, in any of the forms a
- * client-credentials caller sends: JSON or form {clientId, clientSecret} /
- * {client_id, client_secret}, or "Authorization: Basic base64(id:secret)".
+ * client-credentials caller sends:
+ *   JSON or form {clientId, clientSecret} / {client_id, client_secret} /
+ *   {email | emailId | emailAddress | email_address | userName | username, password}
+ *   "Authorization: Basic base64(id:secret)", or Basic B64(ROT47(B64(id:secret)))
+ * Each value may itself be plain or B64(ROT47(B64())) encoded (credentialMatches).
  */
 function credentialsOf(req) {
   const auth = String(req.headers.authorization || '');
   if (/^basic\s+/i.test(auth)) {
-    const decoded = Buffer.from(auth.replace(/^basic\s+/i, ''), 'base64').toString('utf8');
-    const i = decoded.indexOf(':');
-    if (i > 0) return { id: decoded.slice(0, i), secret: decoded.slice(i + 1) };
+    const token = auth.replace(/^basic\s+/i, '').trim();
+    for (const decoded of [Buffer.from(token, 'base64').toString('utf8'), decodeGhiEncoded(token)]) {
+      const i = typeof decoded === 'string' ? decoded.indexOf(':') : -1;
+      if (i > 0) return { id: decoded.slice(0, i), secret: decoded.slice(i + 1) };
+    }
   }
   const b = req.body && typeof req.body === 'object' ? req.body : {};
-  return { id: b.clientId ?? b.client_id ?? b.clientID, secret: b.clientSecret ?? b.client_secret };
+  return {
+    // GHI's own APIs name an e-mail `emailId` (createOrder); GHI's mail of 27 Nov 2026
+    // says only "email address and password", so the usual spellings are all read.
+    id: b.clientId ?? b.client_id ?? b.clientID ?? b.email ?? b.emailId ?? b.emailAddress ?? b.email_address ?? b.userName ?? b.username,
+    secret: b.clientSecret ?? b.client_secret ?? b.password,
+  };
 }
 
 /** POST /payment/token → { access_token, token_type, expires_in }. Throws 401/503. */
 export function issueToken(req, now = Date.now()) {
   if (!tokenApiConfigured()) throw configError('The Galaxy payment token API is off: GX_PAYMENT_CLIENT_ID / GX_PAYMENT_CLIENT_SECRET are not set.');
   const { id, secret } = credentialsOf(req);
-  if (!safeEqual(id, payCfg().clientId) || !safeEqual(secret, payCfg().clientSecret)) {
+  if (!credentialMatches(id, payCfg().clientId) || !credentialMatches(secret, payCfg().clientSecret)) {
     throw galaxyError('Invalid client credentials.', { status: 401, code: 'UNAUTHORIZED', provider: null });
   }
   const ttl = payCfg().tokenTtlSeconds;
